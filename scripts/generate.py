@@ -58,10 +58,37 @@ def warn(msg: str) -> None:
 
 
 def get_token() -> str:
-    tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if not tok:
+    """
+    Pick the first token that actually authenticates.
+
+    `GH_TOKEN` (the optional narrowly-scoped PAT) is preferred because it can
+    usually read org team membership, but a revoked or expired PAT must not take
+    the whole dashboard down when the automatic `GITHUB_TOKEN` still works. Each
+    candidate is probed against /rate_limit, which does not consume quota.
+    """
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = (os.environ.get(name) or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            candidates.append((name, value))
+    if not candidates:
         sys.exit("ERROR: set GH_TOKEN or GITHUB_TOKEN")
-    return tok
+
+    for index, (name, value) in enumerate(candidates):
+        resp = SESSION.get(f"{API}/rate_limit", headers=_headers(value), timeout=30)
+        if resp.status_code == 200:
+            if index:
+                warn(f"falling back to ${name} for API access")
+            log(f"Authenticated with ${name}")
+            return value
+        remaining = candidates[index + 1:]
+        warn(
+            f"${name} failed authentication (HTTP {resp.status_code})"
+            + (f"; trying ${remaining[0][0]}" if remaining else "")
+        )
+    sys.exit("ERROR: none of the supplied tokens could authenticate")
 
 
 SESSION = requests.Session()

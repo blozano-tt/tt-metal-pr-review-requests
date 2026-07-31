@@ -128,11 +128,19 @@ every otherwise-unowned file in the repo to the top-level owners.
 
 ## Optional secret: `TT_METAL_READ_TOKEN`
 
-The workflow reads its token as:
+The workflow passes both tokens to the generator:
 
 ```yaml
-GH_TOKEN: ${{ secrets.TT_METAL_READ_TOKEN || secrets.GITHUB_TOKEN }}
+GH_TOKEN: ${{ secrets.TT_METAL_READ_TOKEN }}
+GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+`get_token()` probes each in turn against `/rate_limit` (which costs no quota)
+and uses the first that authenticates, preferring `GH_TOKEN`. So a **missing,
+revoked or expired** `TT_METAL_READ_TOKEN` degrades to the automatic token with
+a warning on the page instead of failing the build — which is exactly what
+happened once in practice, when a `TT_METAL_READ_TOKEN` was added whose value
+returned `401 Bad credentials` and took the whole run down.
 
 **No secret has been created — this is intentional and needs a human decision.**
 

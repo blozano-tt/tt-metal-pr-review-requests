@@ -32,9 +32,11 @@ jobs:
 
       - name: Generate site
         env:
-          # Prefer a narrowly-scoped read-only PAT if the repo owner adds one;
-          # otherwise fall back to the automatic per-run token.
-          GH_TOKEN: ${{ secrets.TT_METAL_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          # Prefer a narrowly-scoped read-only PAT if the repo owner adds one.
+          # Both are passed so the generator can fall back to the automatic
+          # per-run token if the PAT is missing, revoked or expired.
+          GH_TOKEN: ${{ secrets.TT_METAL_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUT_DIR: public
         run: python scripts/generate.py
 
