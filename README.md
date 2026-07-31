@@ -59,9 +59,10 @@ These were judgement calls. They're easy to flip — say the word.
    sample this affected ~2% of PRs, which would otherwise have shown reviewers
    as outstanding when GitHub already counts them as approving.
 
-3. **Sort order is PR number descending** (newest first). This is a judgement
-   call — the request said "sorted by PR number" without a direction. Flip
-   `reverse=True` in `build_rows()` if ascending is preferred.
+3. **Sort order is PR number ascending** (oldest first, lowest number at the
+   top). This reverses an earlier descending default, so the longest-waiting
+   PRs surface first. Add `reverse=True` to the `rows.sort(...)` call in
+   `build_rows()` to flip it back.
 
 4. **Draft PRs are excluded.** (This reverses an earlier assumption: the
    original request only said "open PRs", so drafts were initially included.)

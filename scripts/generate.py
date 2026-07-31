@@ -528,7 +528,7 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
             log(f"  processed {i}/{len(prs)} PRs")
     if unowned_only:
         log(f"  note: {unowned_only} PRs had no CODEOWNERS-matched files")
-    rows.sort(key=lambda r: r["number"], reverse=True)  # descending PR number
+    rows.sort(key=lambda r: r["number"])  # ascending PR number (oldest first)
     return rows
 
 
@@ -640,7 +640,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     parts.append(
         "<footer>Last refreshed "
         f"<strong>{now:%Y-%m-%d %H:%M:%S} UTC</strong>. Refreshed automatically every 3 hours. "
-        "Sorted by PR number, descending. Draft PRs excluded. "
+        "Sorted by PR number, ascending. Draft PRs excluded. "
         "<a href='https://github.com/blozano-tt/tt-metal-pr-review-requests'>Source &amp; assumptions</a>."
         "</footer>"
     )
