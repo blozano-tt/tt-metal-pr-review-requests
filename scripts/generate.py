@@ -795,14 +795,18 @@ th { position: sticky; top:0; background:var(--panel-solid); font-size:12px;
 tr:last-child td { border-bottom:none; }
 td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
 td.age { white-space:nowrap; color:var(--muted); font-variant-numeric: tabular-nums; }
-/* `overflow-wrap: anywhere` also shrinks the column's min-content width, which
-   let the owner chips squeeze Title down to a few characters per line. */
 td.pr, th:nth-child(1), td.age, th:nth-child(3),
 td.author, th:nth-child(5), td.status, th:nth-child(6) { width:1%; }
-/* Title gave up width when Author and Status were added; Codeowners chips still
-   get whatever is left over. */
-th:nth-child(2) { width:24%; }
-td.title { min-width:200px; overflow-wrap:break-word; }
+/* Title is the only column that can give ground, so it is the one that absorbs
+   the two new columns. `overflow-wrap: anywhere` (unlike `break-word`) also
+   shrinks the column's *min-content* width, which is what keeps the table
+   inside its card: with Author and Status added, Title's longest unbreakable
+   word alone pushed the table 68px past the card edge. An earlier attempt at
+   `anywhere` was reverted because the owner chips then squeezed Title to a few
+   characters per line -- the explicit percentage below is what makes it safe
+   now, since it gives Title a floor the chips cannot bid away. */
+th:nth-child(2) { width:28%; }
+td.title { min-width:200px; overflow-wrap:anywhere; }
 td.author { white-space:nowrap; }
 /* Wide enough that the longest badge ("changes requested") never wraps
    mid-label, narrow enough that badges stack instead of stretching the row. */

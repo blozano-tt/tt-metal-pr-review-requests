@@ -184,6 +184,13 @@ These were judgement calls. They're easy to flip — say the word.
    one very long title can't blow out the table layout. The full untruncated
    title is preserved as the cell's `title` tooltip and in `data.json`.
 
+   Title is also the column that gives ground when the table gets crowded: it
+   carries `overflow-wrap: anywhere` plus an explicit `28%` width. The wrap mode
+   is what lets the six-column table shrink to its card (a single long
+   unbreakable word in one title otherwise pushed it 68px past the card edge);
+   the explicit width is what stops the Codeowners chips from bidding that space
+   away, which is why an earlier `anywhere` attempt had to be reverted.
+
 7. **Only individuals are listed, never teams.** Team handles are expanded to
    member logins. If a team cannot be read (see below) the raw `@org/team`
    handle is shown as a fallback rather than silently dropped, and a warning is
