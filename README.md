@@ -9,8 +9,8 @@ A small static site that answers one question for every open pull request in
 
 The page is a six-column table — **PR**, **Title**, **Age**, **Codeowners**,
 **Author**, **Status** — covering every open, non-draft PR created in the last
-2 months, sorted by PR number. A machine-readable `data.json` is published
-alongside it.
+2 months, sorted by PR number and re-sortable by any column. A machine-readable
+`data.json` is published alongside it.
 
 ## How it works
 
@@ -173,6 +173,56 @@ The stat tiles keep showing whole-dataset totals even while a filter is active,
 because they link out to GitHub searches over the whole dataset — changing their
 numbers would contradict where they point. The status line is the authoritative
 filtered count.
+
+### Sorting
+
+Every column header is a `<button>`: click (or Tab to it and press Enter/Space)
+to sort, click again to flip direction. The active column shows ↑/↓ and carries
+`aria-sort`; the arrow is always in the DOM at `opacity:0` so toggling sort
+cannot shift the header's width. **The default on load is unchanged** — PR
+ascending, oldest first — the arrow just now says so.
+
+Nothing is parsed out of rendered text. Each row carries its sort keys as
+`data-*` attributes, so comparisons are type-correct by construction:
+
+| Column | Key | Notes |
+| --- | --- | --- |
+| PR | `data-number` | numeric |
+| Title | `data-title` | lowercased server-side |
+| Age | `data-age` | **exact age in seconds**, not the rendered string — text sort would put "2 days" before "10 days", and the existing `age_days` floors sub-day PRs to 0 |
+| Codeowners | `data-owncount` | see below |
+| Author | `data-author` | lowercased server-side |
+| Status | `data-status` | see below |
+
+**Codeowners sorts on the count of outstanding codeowners**, tie-broken by the
+alphabetically-first handle. A variable-length chip list has no natural scalar;
+the count is the one that means something operationally ("how many people still
+have to act"), and ascending therefore puts fully-approved PRs at the top. Ties
+are common with a count, so the first-handle tie-break keeps equal-length lists
+in a meaningful rather than arbitrary order.
+
+**Status packs its three axes into one integer**, review-major:
+
+```
+review * 100 + merge * 10 + checks          (higher = more blocked)
+
+review:  approved 0  < awaiting 1 < changes-requested 2
+merge:   clean    0  < unknown  1 < conflicting       2
+checks:  passing  0  < none     1 < pending 2 < failing 3
+```
+
+Status genuinely has no natural total order — that's why the column renders
+three separate badges — so this is a deliberate choice, not a derived fact.
+Review is the most significant digit because "who still has to act" is what the
+page is for; conflicts outrank CI because a conflict blocks the merge button
+outright while a red check may be a flake. Sorting Status **descending** gives
+"most blocked first" (unapproved + conflicting + failing = 223). Rows carrying
+both review badges take the blocking one, via `max()` on the review axis.
+
+Both sorts compose with the username filter: sorting re-appends the existing row
+elements, which preserves each row's `hidden` state, so what you see is the
+filtered set re-ordered rather than the whole dataset. A final tie-break on PR
+number keeps the order deterministic regardless of the browser's sort stability.
 
 ### Refresh cadence
 

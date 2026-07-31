@@ -667,6 +667,45 @@ def checks_state(pr: dict) -> str | None:
     return rollup.get("state")
 
 
+# Per-axis "blocked-ness" rank, used only for sorting. Higher = more blocked.
+# Ordering judgement inside each axis:
+#   review  -- an approval is the goal, so approved < awaiting < changes-requested.
+#   merge   -- unknown sits between clean and conflicting: it is not known to be
+#              a problem, but it is not known to be fine either.
+#   checks  -- "no checks" ranks above "passing" but below "pending": nothing is
+#              wrong, but nothing has vouched for the PR either. Failing is worst.
+STATUS_AXIS_RANK = {
+    "review-approved": 0, "review-awaiting": 1, "review-changes": 2,
+    "merge-clean": 0, "merge-unknown": 1, "merge-conflict": 2,
+    "checks-pass": 0, "checks-none": 1, "checks-pending": 2, "checks-fail": 3,
+}
+
+
+def status_score(badge_ids: list[str]) -> int:
+    """
+    Collapse the three Status axes into one deterministic sort key.
+
+    Status has no natural total order -- it is three independent axes, which is
+    the whole reason the column renders separate badges. For *sorting* we need
+    one number, so this packs the axes into digits, review-major:
+
+        review * 100 + merge * 10 + checks      (higher = more blocked)
+
+    Review is the most significant digit because "who still has to act" is what
+    this page is about; conflicts outrank CI because a conflict blocks the merge
+    button outright while a red check may be a flake. Sorting Status descending
+    therefore surfaces "unapproved AND conflicting AND failing" first and
+    "approved, clean, green" last. `max()` on the review axis is what makes the
+    approved-plus-changes-requested rows (which carry two review badges) rank as
+    changes-requested, i.e. the blocking one wins.
+    """
+    def axis(prefix: str, default: int = 0) -> int:
+        ranks = [STATUS_AXIS_RANK[b] for b in badge_ids if b.startswith(prefix)]
+        return max(ranks) if ranks else default
+
+    return axis("review-") * 100 + axis("merge-") * 10 + axis("checks-")
+
+
 def status_badges(outstanding: bool, changes_requested: bool,
                   mergeable: str | None, checks: str | None) -> list[str]:
     """Badge ids for one PR: review axis (1-2), merge axis (1), CI axis (1)."""
@@ -738,6 +777,10 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
 
         created = datetime.fromisoformat(pr["createdAt"].replace("Z", "+00:00"))
         age_text, age_days = human_age(created, now)
+        # Exact age in seconds for the client-side sort. The rendered "3 days"
+        # string cannot be sorted as text ("2 days" would precede "10 days"),
+        # and age_days floors sub-day PRs to 0, so it cannot order them either.
+        age_seconds = int((now - created).total_seconds())
         # author is null for PRs opened by a since-deleted account.
         author = pr.get("author") or {}
         mergeable = pr.get("mergeable")
@@ -751,6 +794,7 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
                 "created": created,
                 "age_text": age_text,
                 "age_days": age_days,
+                "age_seconds": age_seconds,
                 "files": len(files),
                 "groups": len(groups),
                 "codeowners": sorted(outstanding, key=str.lower),
@@ -862,6 +906,21 @@ th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
 /* Sticky header must be fully opaque or rows ghost through it as they scroll. */
 th { position: sticky; top:0; background:var(--panel-solid); font-size:12px;
   text-transform:uppercase; letter-spacing:.06em; color:var(--muted); z-index:1; }
+/* Sort controls are real <button>s so Enter/Space and focus come for free, but
+   they must look exactly like the header text they replaced. */
+.sortbtn { font:inherit; color:inherit; text-transform:inherit;
+  letter-spacing:inherit; background:none; border:0; padding:0; margin:0;
+  cursor:pointer; display:inline-flex; align-items:center; gap:4px;
+  white-space:nowrap; }
+.sortbtn:hover { color:var(--text); }
+.sortbtn:focus-visible { outline:2px solid var(--link); outline-offset:3px;
+  border-radius:3px; }
+/* The arrow is always in the DOM but only inked on the active column, so
+   turning sort on and off cannot shift the header's width. */
+.arrow::after { content:"\2191"; opacity:0; font-size:11px; }
+th.sorted .sortbtn { color:var(--text); }
+th.sorted .arrow::after { opacity:1; }
+th.sorted.desc .arrow::after { content:"\2193"; }
 tr:last-child td { border-bottom:none; }
 td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
 td.age { white-space:nowrap; color:var(--muted); font-variant-numeric: tabular-nums; }
@@ -1025,6 +1084,98 @@ FILTER_JS = r"""
 """
 
 
+# Click-to-sort on the column headers. Purely client-side, like the filter:
+# every sort key is already on the row as a data-* attribute, so this never
+# parses rendered text and never touches the network.
+SORT_JS = r"""
+(function () {
+  var table = document.getElementById('prTable');
+  if (!table) { return; }
+  var tbody = table.tBodies[0];
+  var noMatches = document.getElementById('noMatches');
+  // Only real data rows move; the "no matches" row is re-pinned to the end.
+  var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr[data-owners]'));
+  if (!rows.length) { return; }
+
+  // key -> [attribute, kind]. 'num' compares numerically, 'str' compares
+  // case-insensitively (the attributes are already lowercased server-side).
+  var KEYS = {
+    pr:         ['data-number',   'num'],
+    title:      ['data-title',    'str'],
+    age:        ['data-age',      'num'],
+    codeowners: ['data-owncount', 'num'],
+    author:     ['data-author',   'str'],
+    status:     ['data-status',   'num']
+  };
+
+  var current = 'pr';      // the page ships sorted by PR ascending
+  var ascending = true;
+
+  function value(row, key) {
+    var spec = KEYS[key];
+    var raw = row.getAttribute(spec[0]) || '';
+    return spec[1] === 'num' ? parseFloat(raw) || 0 : raw;
+  }
+
+  function compare(a, b, key) {
+    var av = value(a, key), bv = value(b, key);
+    if (av < bv) { return -1; }
+    if (av > bv) { return 1; }
+    // Codeowners is a count, so ties are common and meaningless on their own:
+    // fall back to the alphabetically-first outstanding handle before the
+    // universal PR-number tie-break.
+    if (key === 'codeowners') {
+      var af = a.getAttribute('data-ownfirst') || '';
+      var bf = b.getAttribute('data-ownfirst') || '';
+      if (af !== bf) { return af < bf ? -1 : 1; }
+    }
+    return 0;
+  }
+
+  function apply(key) {
+    var sorted = rows.slice().sort(function (a, b) {
+      var d = compare(a, b, key);
+      if (d !== 0) { return ascending ? d : -d; }
+      // Deterministic final tie-break, always ascending by PR number, so the
+      // order never depends on the browser's sort stability.
+      return value(a, 'pr') - value(b, 'pr');
+    });
+
+    // One reflow instead of 449: detach into a fragment, then re-attach.
+    // Re-appending existing nodes preserves each row's `hidden` state, so an
+    // active username filter keeps hiding exactly the same rows and what the
+    // user sees is the filtered set, re-ordered.
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < sorted.length; i++) { frag.appendChild(sorted[i]); }
+    tbody.appendChild(frag);
+    if (noMatches) { tbody.appendChild(noMatches); }
+
+    var ths = table.querySelectorAll('thead th');
+    for (var j = 0; j < ths.length; j++) {
+      var active = ths[j].getAttribute('data-col') === key;
+      ths[j].setAttribute('aria-sort', active ? (ascending ? 'ascending' : 'descending') : 'none');
+      ths[j].classList.toggle('sorted', active);
+      ths[j].classList.toggle('desc', active && !ascending);
+    }
+  }
+
+  table.querySelector('thead').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.sortbtn') : null;
+    if (!btn) { return; }
+    var key = btn.getAttribute('data-key');
+    if (!KEYS[key]) { return; }
+    // Same column toggles direction; a new column starts ascending.
+    ascending = (key === current) ? !ascending : true;
+    current = key;
+    apply(key);
+  });
+
+  // Reflect the initial PR-ascending state in the arrow without reordering.
+  apply('pr');
+}());
+"""
+
+
 # Shows the sideways-scroll hint only when the table actually overflows its
 # container, which depends on viewport width and on the widest chip in the
 # current dataset -- neither of which a media query can know.
@@ -1083,6 +1234,48 @@ def legend_html() -> str:
         "one. Hover any badge for detail."
         f"{rows}</div>"
     )
+
+
+# (sort key, header label, what ascending means -- shown as the button tooltip
+# so the two judgement-call columns are not a mystery in the UI either).
+COLUMNS: list[tuple[str, str, str]] = [
+    ("pr", "PR", "Sort by PR number"),
+    ("title", "Title", "Sort by title, case-insensitive"),
+    ("age", "Age", "Sort by exact age; ascending puts the newest PRs first"),
+    (
+        "codeowners",
+        "Codeowners",
+        "Sort by how many codeowners are still outstanding (ties broken by the "
+        "first handle); ascending puts fully-approved PRs first",
+    ),
+    ("author", "Author", "Sort by author, case-insensitive"),
+    (
+        "status",
+        "Status",
+        "Sort by how blocked the PR is, review first, then conflicts, then "
+        "checks; descending puts the most blocked PRs first",
+    ),
+]
+
+
+def header_cells_html() -> str:
+    """
+    Header cells as real <button>s so they are keyboard-operable and announced
+    as controls for free -- no tabindex/keydown plumbing needed, since a button
+    already handles Enter and Space.
+    """
+    cells = []
+    for i, (key, label, tip) in enumerate(COLUMNS):
+        # The table ships pre-sorted by PR ascending, so say so from the start
+        # rather than claiming nothing is sorted.
+        aria = "ascending" if key == "pr" else "none"
+        cells.append(
+            f"<th aria-sort='{aria}' data-col='{html.escape(key)}'>"
+            f"<button type='button' class='sortbtn' data-key='{html.escape(key)}' "
+            f"title='{html.escape(tip)}'>{html.escape(label)}"
+            "<span class='arrow' aria-hidden='true'></span></button></th>"
+        )
+    return "".join(cells)
 
 
 def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
@@ -1182,8 +1375,8 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     )
     parts.append(
         "<div class='tablewrap' id='tableWrap'>"
-        "<table id='prTable'><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
-        "<th>Codeowners</th><th>Author</th><th>Status</th></tr></thead><tbody>"
+        "<table id='prTable'><thead><tr>" + header_cells_html()
+        + "</tr></thead><tbody>"
     )
     for r in rows:
         if r["codeowners"]:
@@ -1210,8 +1403,23 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         else:
             author_cell = "<span class='badge muted'>unknown</span>"
         status_cell = "".join(badge_html(b) for b in r["badges"])
+        # Sort keys travel as data-* attributes so the comparators never have to
+        # re-parse rendered text. Codeowners sorts on the *count* of outstanding
+        # people -- the actionable number, and the only scalar a variable-length
+        # chip list really has -- with the alphabetically-first handle as the
+        # tie-break so equal-length lists still land in a stable, meaningful
+        # order rather than an arbitrary one.
+        sort_attrs = (
+            f" data-number='{r['number']}'"
+            f" data-title='{html.escape(r['title'].lower())}'"
+            f" data-age='{r['age_seconds']}'"
+            f" data-owncount='{len(r['codeowners'])}'"
+            f" data-ownfirst='{html.escape(r['codeowners'][0].lstrip('@').lower() if r['codeowners'] else '')}'"
+            f" data-author='{html.escape((r['author'] or '').lower())}'"
+            f" data-status='{status_score(r['badges'])}'"
+        )
         parts.append(
-            f"<tr data-owners='{html.escape(owners_attr)}'>"
+            f"<tr data-owners='{html.escape(owners_attr)}'{sort_attrs}>"
             f"<td class='pr'><a href='{html.escape(r['url'])}'>"
             f"{SRC_REPO}#{r['number']}</a></td>"
             f"<td class='title' title='{html.escape(full_title)}'>"
@@ -1236,6 +1444,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "</footer>"
     )
     parts.append(f"<script>{FILTER_JS}</script>")
+    parts.append(f"<script>{SORT_JS}</script>")
     parts.append(f"<script>{SCROLLHINT_JS}</script>")
     parts.append("</div></body></html>")
     return "\n".join(parts)
