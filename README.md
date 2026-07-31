@@ -56,9 +56,18 @@ Notes on the review axis:
   blocking combination (2 of 449 PRs at the time of writing), so such a row
   shows both ✅ and ✋ rather than silently dropping one.
 
-`mergeable` is `UNKNOWN` when GitHub has not finished computing mergeability —
-it is computed lazily on access, so a couple of rows per build land there. A
-missing `statusCheckRollup` (a PR with no CI at all) renders ⚪ *no checks*
+**`mergeable` needs polling, not a single read.** GitHub computes it lazily: the
+first request only *enqueues* a background merge test and returns `UNKNOWN`, and
+every cached answer for the repo is invalidated whenever the base branch moves.
+On a repo as busy as tt-metal a build can easily catch most PRs mid-computation
+— an early build landed with **401 of 445 `UNKNOWN`**, which left the whole
+Conflicts axis showing nothing but the fallback badge. `refresh_unknown_mergeable()`
+therefore re-polls just the unknown ones (up to 3 rounds, 8s apart, `number` +
+`mergeable` only, ~8 shallow requests per round). A typical run now settles
+286 → 3 in a single round. Anything still unknown renders ❔, and a build where
+more than 20% remain unknown raises a page warning.
+
+A missing `statusCheckRollup` (a PR with no CI at all) renders ⚪ *no checks*
 rather than a false "failing".
 
 Both fields are cheap scalar/shallow additions to the existing batched query;

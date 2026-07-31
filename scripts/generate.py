@@ -438,6 +438,76 @@ def fetch_prs(token: str, cutoff: datetime) -> list[dict]:
     return prs
 
 
+MERGEABLE_RETRY_ROUNDS = 3
+MERGEABLE_RETRY_DELAY = 8      # seconds between rounds
+MERGEABLE_REFRESH_BATCH = 50   # PRs per aliased query
+
+
+def refresh_unknown_mergeable(token: str, prs: list[dict]) -> None:
+    """
+    Re-poll PRs whose `mergeable` came back UNKNOWN, updating them in place.
+
+    GitHub computes mergeability lazily: the first request for a PR only
+    *enqueues* a background merge test and returns UNKNOWN, and every cached
+    answer for the repo is invalidated whenever the base branch moves. On a
+    repo as busy as tt-metal that means a build can easily catch ~90% of PRs
+    mid-computation -- one observed run had 401 of 445 UNKNOWN, which left the
+    entire Conflicts axis showing nothing but the fallback badge. GitHub's own
+    guidance is to poll until the value is non-null, which is what this does.
+
+    Cheap: the retry query asks only for `number` and `mergeable`, so a whole
+    round over 400 PRs is ~8 shallow requests.
+    """
+    pending = [p for p in prs if p.get("mergeable") == "UNKNOWN"]
+    if not pending:
+        return
+    by_number = {p["number"]: p for p in prs}
+    log(f"  {len(pending)} PRs have UNKNOWN mergeability; polling GitHub to settle it")
+
+    for round_no in range(1, MERGEABLE_RETRY_ROUNDS + 1):
+        time.sleep(MERGEABLE_RETRY_DELAY)
+        for start in range(0, len(pending), MERGEABLE_REFRESH_BATCH):
+            chunk = pending[start:start + MERGEABLE_REFRESH_BATCH]
+            aliases = " ".join(
+                f"p{p['number']}: pullRequest(number: {p['number']}) "
+                "{ number mergeable }"
+                for p in chunk
+            )
+            query = (
+                "query($owner:String!, $name:String!) { "
+                "repository(owner:$owner, name:$name) { " + aliases + " } }"
+            )
+            data = graphql(token, query, {"owner": SRC_OWNER, "name": SRC_REPO})
+            for node in (data.get("repository") or {}).values():
+                if not isinstance(node, dict):
+                    continue
+                state = node.get("mergeable")
+                if state and state != "UNKNOWN" and node["number"] in by_number:
+                    by_number[node["number"]]["mergeable"] = state
+        settled = [p for p in pending if p.get("mergeable") != "UNKNOWN"]
+        pending = [p for p in pending if p.get("mergeable") == "UNKNOWN"]
+        log(
+            f"  mergeability round {round_no}: settled {len(settled)}, "
+            f"{len(pending)} still unknown"
+        )
+        if not pending:
+            break
+
+    if pending:
+        # Not fatal: those rows render the "merge unknown" badge, which is what
+        # it is for. Only shout if it is a big enough share to matter.
+        share = len(pending) / max(1, len(prs))
+        msg = (
+            f"{len(pending)} of {len(prs)} PRs still had UNKNOWN mergeability after "
+            f"{MERGEABLE_RETRY_ROUNDS} polling rounds; their Conflicts badge is "
+            "'merge unknown'"
+        )
+        if share > 0.2:
+            warn(msg)
+        else:
+            log(f"  note: {msg}")
+
+
 def complete_pr(token: str, pr: dict) -> tuple[list[str], list[dict]]:
     """Return (all changed file paths, all reviews), paginating if truncated."""
     files = [n["path"] for n in pr["files"]["nodes"]]
@@ -1190,6 +1260,8 @@ def main() -> None:
     log("Fetching open PRs ...")
     prs = fetch_prs(token, cutoff)
     log(f"  {len(prs)} open PRs in the last {MONTHS_BACK} months")
+
+    refresh_unknown_mergeable(token, prs)
 
     teams = TeamResolver(token)
     log("Resolving PRs (files, reviews, codeowners) ...")
