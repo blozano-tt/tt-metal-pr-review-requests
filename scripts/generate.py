@@ -560,7 +560,10 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
     return rows
 
 
-CSS = """
+# NOTE: raw string. A non-raw literal here once turned the CSS escape "\2197"
+# (an up-arrow glyph) into Python's octal escape \21 followed by a literal "97",
+# which rendered a stray "97" after every linked stat tile.
+CSS = r"""
 :root {
   --bg: #0f1116; --panel: #171a21; --line: #262b36; --text: #e6e9ef;
   --muted: #98a1b3; --link: #7cb7ff; --accent: #4ade80; --chip: #222836;
@@ -582,7 +585,7 @@ h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
 .stat b { font-size:17px; display:block; color:var(--text); }
 a.stat { color:var(--link); text-decoration:none; transition:border-color .12s ease; }
 a.stat:hover, a.stat:focus-visible { border-color:var(--link); text-decoration:underline; }
-a.stat::after { content:" \2197"; font-size:11px; opacity:.75; }
+a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
 table { width:100%; border-collapse: collapse; background:var(--panel);
   border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
