@@ -12,6 +12,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -565,16 +566,39 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
 # which rendered a stray "97" after every linked stat tile.
 CSS = r"""
 :root {
-  --bg: #0f1116; --panel: #171a21; --line: #262b36; --text: #e6e9ef;
-  --muted: #98a1b3; --link: #7cb7ff; --accent: #4ade80; --chip: #222836;
+  --bg: #0f1116; --panel: rgba(22,25,32,.90); --panel-solid: #161920;
+  --line: #2c313d; --text: #e6e9ef; --muted: #a3abbd; --link: #8cc0ff;
+  --accent: #5ce68d; --chip: rgba(38,44,58,.92);
+  --scrim: rgba(8,10,16,.80); --img-filter: brightness(.85) saturate(1.05);
 }
 @media (prefers-color-scheme: light) {
-  :root { --bg:#f7f8fa; --panel:#fff; --line:#e3e6ec; --text:#1a1d24;
-          --muted:#5d6677; --link:#0a58ca; --accent:#137a3d; --chip:#eef1f6; }
+  /* Muted/link are darker than the usual light-theme values, and the scrim is
+     heavier, because header text sits directly over the fractal: its black
+     interior is the worst case and these values keep it above WCAG AA there. */
+  :root { --bg:#f7f8fa; --panel:rgba(255,255,255,.93); --panel-solid:#fff;
+          --line:#dfe3ea; --text:#1a1d24; --muted:#464e5c; --link:#0a44a0;
+          --accent:#0f6b35; --chip:rgba(238,241,246,.95);
+          --scrim: rgba(247,248,250,.86); --img-filter: brightness(1.15) saturate(1); }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
   font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+/* Decorative Mandelbrot backdrop. Two fixed layers behind all content:
+   the image, then a scrim that buys back the contrast the table needs.
+   Fixed positioning (rather than relying on background-attachment alone)
+   keeps it steady under a 400+ row scroll without repaint cost. */
+body::before, body::after { content:""; position:fixed; inset:0;
+  pointer-events:none; }
+body::before {
+  background-image:url("mandelbrot.jpg");
+  background-size:cover; background-position:center; background-attachment:fixed;
+  filter:var(--img-filter);
+  z-index:-2;
+}
+body::after { background:var(--scrim); z-index:-1; }
+@media (prefers-reduced-motion: reduce) {
+  body::before { background-attachment: scroll; }
+}
 .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
 h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
 .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
@@ -605,7 +629,8 @@ table { width:100%; border-collapse: collapse; background:var(--panel);
   border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
   vertical-align: top; }
-th { position: sticky; top:0; background:var(--panel); font-size:12px;
+/* Sticky header must be fully opaque or rows ghost through it as they scroll. */
+th { position: sticky; top:0; background:var(--panel-solid); font-size:12px;
   text-transform:uppercase; letter-spacing:.06em; color:var(--muted); z-index:1; }
 tr:last-child td { border-bottom:none; }
 td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
@@ -874,6 +899,19 @@ def main() -> None:
     rows = build_rows(token, rules, teams, prs, now)
 
     os.makedirs(OUT_DIR, exist_ok=True)
+
+    # Static assets (the pre-rendered Mandelbrot backdrop) live in the repo and
+    # are copied verbatim; nothing about the fractal is computed at page load.
+    asset_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+    if os.path.isdir(asset_dir):
+        for name in sorted(os.listdir(asset_dir)):
+            src = os.path.join(asset_dir, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(OUT_DIR, name))
+                log(f"  copied asset {name}")
+    else:
+        warn("assets/ directory missing; page background will not load")
+
     out_html = os.path.join(OUT_DIR, "index.html")
     with open(out_html, "w", encoding="utf-8") as fh:
         fh.write(render_html(rows, now, cutoff))

@@ -25,6 +25,32 @@ number. A machine-readable `data.json` is published alongside it.
    group that already has an approval, and unions what's left.
 5. Renders `public/index.html` (+ `public/data.json`) and deploys to Pages.
 
+### Background image
+
+The page sits on a pre-rendered Mandelbrot set (`assets/mandelbrot.jpg`, 1920x1080,
+~112 KB) in the classic escape-time palette: black interior, deep blue field,
+magenta/pink/orange/gold boundary glow.
+
+It is generated **once, offline** by `scripts/make_background.py` (numpy + Pillow)
+and committed as a repo asset — nothing is computed in the browser, and the site
+build has no numpy/Pillow dependency. `generate.py` just copies `assets/` into the
+published output.
+
+Contrast treatment, since this is a dense data table:
+
+- two fixed full-viewport layers behind everything — the image, then a **scrim**
+  (80% in dark mode, 86% in light) that buys back contrast;
+- content panels are **semi-opaque** (90–93%) so the fractal reads as texture
+  behind them rather than through the text;
+- the sticky table header is **fully opaque**, or rows ghost through it as they scroll;
+- in light mode the muted and link colours are darkened, because header text sits
+  directly on the scrim and the fractal's black interior is the worst case there.
+
+Verified against WCAG using the fractal's extreme pixels (pure black and the
+brightest gold) as the backdrop: dark mode is AAA nearly everywhere and AA at
+worst; light mode clears AA with margin. JPEG rather than PNG — this is a smooth
+photographic gradient where PNG runs to several megabytes.
+
 ### Filtering by username
 
 The page has a **"Filter by GitHub username"** box that narrows the table to the
