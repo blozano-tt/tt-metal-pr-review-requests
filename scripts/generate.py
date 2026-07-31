@@ -836,6 +836,43 @@ a:hover { text-decoration: underline; }
   border-radius:12px; box-shadow:var(--shadow); padding:12px 16px; margin-bottom:18px; font-size:13px; }
 .warnbox ul { margin:6px 0 0; padding-left:18px; }
 footer { color:var(--muted); font-size:12px; }
+/* Horizontal scroll container for the table. Deliberately NOT scrollable at
+   desktop widths: any scrolling overflow value here makes this element the
+   sticky header's scrollport, and because it never scrolls vertically the
+   header stops pinning -- the same class of bug as the overflow:hidden one
+   fixed in e66c28b. So it stays overflow:visible until the table cannot fit. */
+.scrollhint { margin:0 0 8px; font-size:12px; color:var(--muted); }
+.scrollhint[hidden] { display:none; }
+
+/* Below ~1040px the six-column table's min-content width (~957px) exceeds the
+   content column, so without this the *whole page* slid sideways -- up to
+   630px on a 375px phone, dragging the cards out of view. Give the table its
+   own scroller instead. Accepted cost: the sticky header does not pin below
+   this width. No CSS allows both (overflow-y:visible computes to auto as soon
+   as overflow-x scrolls), and a page that scrolls sideways is the worse bug. */
+@media (max-width: 1040px) {
+  .tablewrap { overflow-x:auto; overscroll-behavior-x:contain; }
+}
+@media (max-width: 700px) {
+  /* A 128px hero band and 30px gutters are generous on a 1120px column and
+     wasteful on a 375px one; this buys the table ~28px of width back. */
+  .wrap { padding:72px 16px 76px; }
+  h1 { font-size:20px; }
+  /* `cover` on a tall narrow viewport zooms ~3x into the set's black interior,
+     which reads as a featureless grey field. Framing off-centre keeps the
+     antenna and boundary filigree -- the parts that look like a Mandelbrot --
+     in shot. `scroll` is repeated from the pointer query below because that
+     query cannot be verified in a headless browser (it reports a fine pointer
+     even under device emulation), and a width query certainly matches a phone. */
+  body::before { background-position:18% center; background-attachment:scroll; }
+}
+/* background-attachment:fixed is unreliable on touch browsers (iOS Safari in
+   particular ignores or mis-sizes it, with repaint jank while scrolling). The
+   layer is already position:fixed, so `scroll` renders identically here and
+   simply avoids that code path. Mirrors the existing reduced-motion fallback. */
+@media (hover: none) and (pointer: coarse) {
+  body::before { background-attachment:scroll; }
+}
 """
 
 
@@ -914,6 +951,27 @@ FILTER_JS = r"""
 
   bar.hidden = false;   // reveal only once wired up
   apply(input.value);
+}());
+"""
+
+
+# Shows the sideways-scroll hint only when the table actually overflows its
+# container, which depends on viewport width and on the widest chip in the
+# current dataset -- neither of which a media query can know.
+SCROLLHINT_JS = r"""
+(function () {
+  var wrap = document.getElementById('tableWrap');
+  var hint = document.getElementById('scrollHint');
+  if (!wrap || !hint) { return; }
+  function sync() {
+    hint.hidden = wrap.scrollWidth <= wrap.clientWidth + 1;
+  }
+  sync();
+  window.addEventListener('resize', sync);
+  // Once the user has scrolled the table, the hint has done its job.
+  wrap.addEventListener('scroll', function () {
+    if (wrap.scrollLeft > 8) { hint.hidden = true; }
+  }, { passive: true });
 }());
 """
 
@@ -1045,7 +1103,15 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
 
     parts.append(legend_html())
 
+    # Hidden until the script confirms the table really is wider than its
+    # container, so the hint never lies on a viewport where it all fits.
     parts.append(
+        "<p class='scrollhint' id='scrollHint' hidden>"
+        "The table is wider than this screen &mdash; scroll it sideways to reach "
+        "Author and Status. &rarr;</p>"
+    )
+    parts.append(
+        "<div class='tablewrap' id='tableWrap'>"
         "<table id='prTable'><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
         "<th>Codeowners</th><th>Author</th><th>Status</th></tr></thead><tbody>"
     )
@@ -1091,7 +1157,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<a href='#' id='noMatchesClear'>Clear the filter</a> to see all PRs."
         "</td></tr>"
     )
-    parts.append("</tbody></table>")
+    parts.append("</tbody></table></div>")
     parts.append(
         "<footer class='card'>Last refreshed "
         f"<strong>{now:%Y-%m-%d %H:%M:%S} UTC</strong>. Refreshed automatically every 3 hours. "
@@ -1100,6 +1166,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "</footer>"
     )
     parts.append(f"<script>{FILTER_JS}</script>")
+    parts.append(f"<script>{SCROLLHINT_JS}</script>")
     parts.append("</div></body></html>")
     return "\n".join(parts)
 

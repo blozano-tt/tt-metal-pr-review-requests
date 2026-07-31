@@ -107,6 +107,41 @@ text on cards decoupled readability from the background entirely.
 JPEG rather than PNG — this is a smooth photographic gradient where PNG runs to
 several megabytes.
 
+### Mobile layout
+
+The six-column table's min-content width is ~957px, so below roughly 1040px it
+cannot fit the content column. Before this was handled, the **whole page**
+scrolled sideways — up to 630px at 375px wide, dragging the cards half out of
+view. The table now sits in a `.tablewrap` container that becomes
+`overflow-x: auto` under `@media (max-width: 1040px)`, so only the table slides.
+A JS-gated hint line ("scroll it sideways to reach Author and Status →") appears
+only when the table really is wider than its container, and disappears once you
+scroll it.
+
+**The wrapper is deliberately `overflow: visible` on desktop.** Any scrolling
+overflow value makes it the sticky header's scrollport, and since it never
+scrolls vertically the header stops pinning — the same class of bug as the
+`overflow: hidden` one fixed in e66c28b. There is no CSS that gives both a
+horizontal scroller and a viewport-sticky header (`overflow-y: visible`
+computes to `auto` as soon as `overflow-x` scrolls), so the header does not pin
+below 1040px. A page that scrolls sideways is the worse failure.
+
+Two further phone-only adjustments under `@media (max-width: 700px)`:
+
+- **Padding** drops from `128px 30px 132px` to `72px 16px 76px`. The generous
+  hero band and gutters exist so the fractal shows around a 1120px column; on a
+  375px screen they were just eating the table's width.
+- **`background-attachment` switches to `scroll`** (also under
+  `(hover: none) and (pointer: coarse)`). The layer is already `position: fixed`
+  so this renders identically, but it avoids iOS Safari's long-standing
+  unreliability with fixed attachment. The width query is the one that can
+  actually be verified — headless Chromium reports a *fine* pointer even under
+  device emulation, so the pointer query alone would have been untestable.
+- **`background-position` moves to `18% center`.** `cover` on a tall narrow
+  viewport zooms ~3x into the set's black interior, which renders as a
+  featureless grey field; framing off-centre keeps the antenna and boundary
+  filigree in shot.
+
 ### Filtering by username
 
 The page has a **"Filter by GitHub username"** box that narrows the table to the
