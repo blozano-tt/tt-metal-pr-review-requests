@@ -29,6 +29,14 @@ SRC_OWNER = "tenstorrent"
 SRC_REPO = "tt-metal"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
 
+# Only PRs targeting this branch are listed. tt-metal carries a long tail of
+# PRs based on release branches, forks and personal branches (26 of 444 in the
+# window when this filter was added, across 22 distinct base branches); those
+# are somebody else's review queue, not the main-line one this page is about.
+# Applied server-side in the GraphQL query, so they are never fetched at all.
+# verify_base_branch() checks this still matches the repo's actual default.
+BASE_BRANCH = "main"
+
 # Blanket bypass entry stripped from every matched owner line (see README).
 BYPASS_TEAM = "@tenstorrent/codeowner-bypass"
 
@@ -320,10 +328,10 @@ class TeamResolver:
 # --------------------------------------------------------------------------
 
 PR_QUERY = """
-query($owner:String!, $name:String!, $cursor:String, $prs:Int!) {
+query($owner:String!, $name:String!, $cursor:String, $prs:Int!, $base:String!) {
   rateLimit { cost remaining resetAt }
   repository(owner:$owner, name:$name) {
-    pullRequests(states: OPEN, first: $prs, after: $cursor,
+    pullRequests(states: OPEN, first: $prs, after: $cursor, baseRefName: $base,
                  orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -332,6 +340,7 @@ query($owner:String!, $name:String!, $cursor:String, $prs:Int!) {
         title
         createdAt
         isDraft
+        baseRefName
         author { login url }
         mergeable
         commits(last: 1) {
@@ -378,6 +387,31 @@ query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
 """
 
 
+def verify_base_branch(token: str) -> None:
+    """
+    Warn if BASE_BRANCH is no longer the repo's default branch.
+
+    The filter is a hardcoded name rather than "whatever the default is",
+    because silently following a rename would change what the page means
+    without anyone noticing. Instead: keep filtering on the configured branch,
+    and shout if the repo has moved, since that combination would otherwise
+    show up only as a mysteriously empty table.
+    """
+    data, r = rest(token, f"/repos/{SRC_OWNER}/{SRC_REPO}")
+    if data is None:
+        warn(f"could not read {SRC_OWNER}/{SRC_REPO} to confirm its default branch "
+             f"(HTTP {r.status_code}); assuming {BASE_BRANCH!r}")
+        return
+    default = data.get("default_branch")
+    if default and default != BASE_BRANCH:
+        warn(
+            f"{SRC_OWNER}/{SRC_REPO}'s default branch is now {default!r} but this "
+            f"page filters to base:{BASE_BRANCH}; update BASE_BRANCH"
+        )
+    else:
+        log(f"  confirmed default branch is {default!r}")
+
+
 def months_ago(dt: datetime, months: int) -> datetime:
     """Subtract calendar months, clamping the day to the target month's length."""
     year, month = dt.year, dt.month - months
@@ -397,9 +431,12 @@ def fetch_prs(token: str, cutoff: datetime) -> list[dict]:
     """
     Paginate open PRs newest-first, stopping once we pass the cutoff date.
 
-    Drafts are dropped here. GitHub's GraphQL `pullRequests` connection has no
-    server-side draft filter (only `states`, `labels`, `baseRefName`, ...), so
-    this is done client-side; `build_rows` re-checks as a safety net.
+    Base branch IS filtered server-side, via the connection's `baseRefName`
+    argument: it composes cleanly with `states`, `orderBy` and cursor
+    pagination, and filtering there rather than after the fact means the
+    off-target PRs never cost us a request. Drafts still have to be dropped
+    client-side -- the connection has no draft filter -- and `build_rows`
+    re-checks them as a safety net.
     """
     prs: list[dict] = []
     cursor = None
@@ -410,7 +447,13 @@ def fetch_prs(token: str, cutoff: datetime) -> list[dict]:
         data = graphql(
             token,
             PR_QUERY,
-            {"owner": SRC_OWNER, "name": SRC_REPO, "cursor": cursor, "prs": PRS_PER_GQL_PAGE},
+            {
+                "owner": SRC_OWNER,
+                "name": SRC_REPO,
+                "cursor": cursor,
+                "prs": PRS_PER_GQL_PAGE,
+                "base": BASE_BRANCH,
+            },
         )
         rl = data.get("rateLimit") or {}
         conn = data["repository"]["pullRequests"]
@@ -791,6 +834,7 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
                 "url": pr["url"],
                 "title": pr["title"],
                 "draft": pr["isDraft"],
+                "base": pr.get("baseRefName"),
                 "created": created,
                 "age_text": age_text,
                 "age_days": age_days,
@@ -867,6 +911,10 @@ body::after { background:var(--scrim); z-index:-1; }
 .hero { padding:20px 22px; margin:0 0 18px; }
 h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
 .sub { color: var(--muted); font-size: 13px; margin: 0; }
+/* Branch names in prose. Inherits size so it cannot shift the line height. */
+code { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size: .92em; background: var(--chip); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px; }
 .sub a { color: var(--link); }
 footer.card { padding:14px 18px; margin-top:22px; }
 .stats { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 20px; }
@@ -1284,8 +1332,15 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     clear = total - blocked
     distinct = len({o for r in rows for o in r["codeowners"]})
 
-    # Base filters mirror this page's dataset: open, non-draft, within the window.
-    base = ("is:pr", "is:open", "-is:draft", f"created:>={cutoff:%Y-%m-%d}")
+    # Base filters mirror this page's dataset: open, non-draft, targeting the
+    # main branch, within the window.
+    base = (
+        "is:pr",
+        "is:open",
+        "-is:draft",
+        f"base:{BASE_BRANCH}",
+        f"created:>={cutoff:%Y-%m-%d}",
+    )
 
     # NOTE: GitHub has no search qualifier for "has an unsatisfied CODEOWNERS
     # group", which is what this page actually computes. The review:* qualifiers
@@ -1300,7 +1355,8 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             total,
             "open PRs (non-draft)",
             pulls_url(*base),
-            "All open, non-draft PRs created in this window, on GitHub.",
+            f"All open, non-draft PRs targeting {BASE_BRANCH} created in this "
+            "window, on GitHub.",
         ),
         (
             blocked,
@@ -1327,6 +1383,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<h1>tt-metal &mdash; outstanding codeowner reviews</h1>"
         "<p class='sub'>Open, non-draft pull requests in "
         f"<a href='https://github.com/{SRC_OWNER}/{SRC_REPO}'>{SRC_OWNER}/{SRC_REPO}</a> "
+        f"targeting <code>{BASE_BRANCH}</code>, "
         f"created on or after {cutoff:%Y-%m-%d} (last {MONTHS_BACK} months). "
         "The <em>Codeowners</em> column lists the individual accounts whose approval "
         "would still unblock the PR; <em>Status</em> shows why it is not merged yet "
@@ -1439,7 +1496,8 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     parts.append(
         "<footer class='card'>Last refreshed "
         f"<strong>{now:%Y-%m-%d %H:%M:%S} UTC</strong>. Refreshed automatically every 3 hours. "
-        "Sorted by PR number, ascending. Draft PRs excluded. "
+        f"Sorted by PR number, ascending. Draft PRs and PRs not targeting "
+        f"<code>{BASE_BRANCH}</code> excluded. "
         "<a href='https://github.com/blozano-tt/tt-metal-pr-review-requests'>Source &amp; assumptions</a>."
         "</footer>"
     )
@@ -1456,6 +1514,9 @@ def main() -> None:
     cutoff = months_ago(now, MONTHS_BACK)
     log(f"Cutoff: PRs created on/after {cutoff.isoformat()}")
 
+    log(f"Confirming base branch filter (base:{BASE_BRANCH}) ...")
+    verify_base_branch(token)
+
     log("Fetching CODEOWNERS ...")
     data, r = rest(token, f"/repos/{SRC_OWNER}/{SRC_REPO}/contents/{CODEOWNERS_PATH}")
     if data is None:
@@ -1466,9 +1527,16 @@ def main() -> None:
     rules = parse_codeowners(text)
     log(f"  parsed {len(rules)} CODEOWNERS rules")
 
-    log("Fetching open PRs ...")
+    log(f"Fetching open PRs targeting {BASE_BRANCH} ...")
     prs = fetch_prs(token, cutoff)
-    log(f"  {len(prs)} open PRs in the last {MONTHS_BACK} months")
+    log(
+        f"  {len(prs)} open PRs targeting {BASE_BRANCH} "
+        f"in the last {MONTHS_BACK} months"
+    )
+    # The server-side filter should make this impossible; check rather than trust.
+    off_target = sorted({p.get("baseRefName") for p in prs} - {BASE_BRANCH})
+    if off_target:
+        warn(f"base-branch filter leaked PRs targeting: {', '.join(map(str, off_target))}")
 
     refresh_unknown_mergeable(token, prs)
 
@@ -1502,6 +1570,7 @@ def main() -> None:
                 "generated_at": now.isoformat(),
                 "cutoff": cutoff.isoformat(),
                 "source_repo": f"{SRC_OWNER}/{SRC_REPO}",
+                "base_branch": BASE_BRANCH,
                 "warnings": sorted(set(WARNINGS)),
                 "pull_requests": [
                     {
@@ -1509,6 +1578,7 @@ def main() -> None:
                         "url": r["url"],
                         "title": r["title"],
                         "draft": r["draft"],
+                        "base": r["base"],
                         "created_at": r["created"].isoformat(),
                         "age": r["age_text"],
                         "changed_files": r["files"],

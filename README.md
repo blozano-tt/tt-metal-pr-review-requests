@@ -8,9 +8,9 @@ A small static site that answers one question for every open pull request in
 **Live page:** <https://blozano-tt.github.io/tt-metal-pr-review-requests/>
 
 The page is a six-column table — **PR**, **Title**, **Age**, **Codeowners**,
-**Author**, **Status** — covering every open, non-draft PR created in the last
-2 months, sorted by PR number and re-sortable by any column. A machine-readable
-`data.json` is published alongside it.
+**Author**, **Status** — covering every open, non-draft PR **targeting `main`**
+created in the last 2 months, sorted by PR number and re-sortable by any column.
+A machine-readable `data.json` is published alongside it.
 
 ## How it works
 
@@ -18,7 +18,8 @@ The page is a six-column table — **PR**, **Title**, **Age**, **Codeowners**,
 
 1. Reads `.github/CODEOWNERS` from the tt-metal default branch (current rules;
    no historical reconstruction).
-2. Lists open PRs newest-first, drops drafts, and stops at the 2-month cutoff.
+2. Lists open PRs **targeting `main`** newest-first, drops drafts, and stops at
+   the 2-month cutoff.
 3. For each PR, collects the changed files and the review history.
 4. Maps each changed file to its owning CODEOWNERS line (**last matching
    pattern wins**, per GitHub's documented precedence), dedupes the distinct
@@ -269,12 +270,32 @@ These were judgement calls. They're easy to flip — say the word.
    so drafts are dropped client-side in `fetch_prs()`, with a second check in
    `build_rows()` as a safety net. Set `INCLUDE_DRAFTS = True` to restore them.
 
-5. **The window is the trailing 2 months.** (Also reduced from an earlier
+5. **Only PRs targeting `main` are listed.** tt-metal carries a long tail of
+   PRs based on release branches, forks and personal branches — when this
+   filter was added, **26 of 444** in-window PRs were off-target, spread across
+   **22 distinct base branches** (`emule-blaze-metal-fork`,
+   `llk_code_gen/ai-agents`, `nstojictt/perf-wide-schema`, …). Those are
+   somebody else's review queue, not the main-line one this page is about, so
+   the count dropped 444 → 418.
+
+   Applied **server-side**, via the `pullRequests` connection's `baseRefName`
+   argument, which composes cleanly with `states`, `orderBy` and cursor
+   pagination — so off-target PRs are never fetched and never cost a request.
+   `fetch_prs()` still asserts no off-target PR slipped through.
+
+   `BASE_BRANCH` is a hardcoded `"main"` rather than "whatever the default
+   is": silently following a rename would change what the page means without
+   anyone noticing. Instead `verify_base_branch()` checks the configured name
+   against the repo's actual `default_branch` each run and raises a page
+   warning if they diverge — otherwise that mismatch would surface only as a
+   mysteriously empty table.
+
+6. **The window is the trailing 2 months.** (Also reduced from an earlier
    3 months.) Controlled by `MONTHS_BACK`; the cutoff is computed per run as
    calendar months before the run time, with the day clamped to the target
    month's length.
 
-6. **Long titles are truncated** at `TITLE_MAX_CHARS` (110) with an ellipsis, so
+7. **Long titles are truncated** at `TITLE_MAX_CHARS` (110) with an ellipsis, so
    one very long title can't blow out the table layout. The full untruncated
    title is preserved as the cell's `title` tooltip and in `data.json`.
 
@@ -285,7 +306,7 @@ These were judgement calls. They're easy to flip — say the word.
    the explicit width is what stops the Codeowners chips from bidding that space
    away, which is why an earlier `anywhere` attempt had to be reverted.
 
-7. **Only individuals are listed, never teams.** Team handles are expanded to
+8. **Only individuals are listed, never teams.** Team handles are expanded to
    member logins. If a team cannot be read (see below) the raw `@org/team`
    handle is shown as a fallback rather than silently dropped, and a warning is
    surfaced both in the build log and in a banner on the page.
