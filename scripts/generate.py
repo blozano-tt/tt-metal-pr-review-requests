@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate a static page listing open tenstorrent/tt-metal PRs (created in the last
-3 months) together with the individual CODEOWNERS whose approval would still
+2 months, drafts excluded) together with the individual CODEOWNERS whose approval would still
 unblock each PR.
 
 See README.md for the design assumptions.
@@ -30,8 +30,15 @@ CODEOWNERS_PATH = ".github/CODEOWNERS"
 # Blanket bypass entry stripped from every matched owner line (see README).
 BYPASS_TEAM = "@tenstorrent/codeowner-bypass"
 
-MONTHS_BACK = 3
+MONTHS_BACK = 2
 PRS_PER_GQL_PAGE = 20
+
+# Draft PRs are excluded (see README assumptions).
+INCLUDE_DRAFTS = False
+
+# Titles longer than this are truncated with an ellipsis; the full title stays
+# available as the link's tooltip.
+TITLE_MAX_CHARS = 110
 OUT_DIR = os.environ.get("OUT_DIR", "public")
 
 API = "https://api.github.com"
@@ -353,10 +360,17 @@ def months_ago(dt: datetime, months: int) -> datetime:
 
 
 def fetch_prs(token: str, cutoff: datetime) -> list[dict]:
-    """Paginate open PRs newest-first, stopping once we pass the cutoff date."""
+    """
+    Paginate open PRs newest-first, stopping once we pass the cutoff date.
+
+    Drafts are dropped here. GitHub's GraphQL `pullRequests` connection has no
+    server-side draft filter (only `states`, `labels`, `baseRefName`, ...), so
+    this is done client-side; `build_rows` re-checks as a safety net.
+    """
     prs: list[dict] = []
     cursor = None
     page = 0
+    skipped = 0
     while True:
         page += 1
         data = graphql(
@@ -367,15 +381,22 @@ def fetch_prs(token: str, cutoff: datetime) -> list[dict]:
         rl = data.get("rateLimit") or {}
         conn = data["repository"]["pullRequests"]
         stop = False
+        drafts = 0
         for node in conn["nodes"]:
             created = datetime.fromisoformat(node["createdAt"].replace("Z", "+00:00"))
             if created < cutoff:
+                # Results are ordered newest-first, so everything after this is older.
                 stop = True
                 continue
+            if node["isDraft"] and not INCLUDE_DRAFTS:
+                drafts += 1
+                continue
             prs.append(node)
+        skipped += drafts
         log(
             f"  page {page}: +{len(conn['nodes'])} PRs scanned, "
-            f"{len(prs)} in window (gql remaining {rl.get('remaining')})"
+            f"{len(prs)} in window (skipped {skipped} draft{'s' if skipped != 1 else ''}) "
+            f"(gql remaining {rl.get('remaining')})"
         )
         if stop or not conn["pageInfo"]["hasNextPage"]:
             break
@@ -459,6 +480,9 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
     rows = []
     unowned_only = 0
     for i, pr in enumerate(prs, start=1):
+        # Safety net: drafts are filtered during fetch, but never let one through.
+        if pr["isDraft"] and not INCLUDE_DRAFTS:
+            continue
         files, reviews = complete_pr(token, pr)
         approved_by = approvers(reviews)
 
@@ -537,10 +561,9 @@ th { position: sticky; top:0; background:var(--panel); font-size:12px;
 tr:last-child td { border-bottom:none; }
 td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
 td.age { white-space:nowrap; color:var(--muted); font-variant-numeric: tabular-nums; }
+td.title { max-width: 420px; overflow-wrap: anywhere; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.draft { display:inline-block; margin-left:6px; font-size:11px; color:var(--muted);
-  border:1px solid var(--line); border-radius:4px; padding:0 5px; background:var(--chip); }
 .owner { display:inline-block; background:var(--chip); border:1px solid var(--line);
   border-radius:5px; padding:1px 6px; margin:2px 3px 2px 0; font-size:13px;
   white-space:nowrap; }
@@ -565,13 +588,13 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<title>tt-metal open PRs &middot; outstanding codeowner reviews</title>",
         f"<style>{CSS}</style></head><body><div class='wrap'>",
         "<h1>tt-metal &mdash; outstanding codeowner reviews</h1>",
-        "<p class='sub'>Open pull requests in "
+        "<p class='sub'>Open, non-draft pull requests in "
         f"<a href='https://github.com/{SRC_OWNER}/{SRC_REPO}'>{SRC_OWNER}/{SRC_REPO}</a> "
         f"created on or after {cutoff:%Y-%m-%d} (last {MONTHS_BACK} months). "
         "The <em>Codeowners</em> column lists the individual accounts whose approval "
         "would still unblock the PR.</p>",
         "<div class='stats'>"
-        f"<div class='stat'><b>{total}</b>open PRs</div>"
+        f"<div class='stat'><b>{total}</b>open PRs (non-draft)</div>"
         f"<div class='stat'><b>{blocked}</b>awaiting codeowner approval</div>"
         f"<div class='stat'><b>{clear}</b>no outstanding codeowners</div>"
         f"<div class='stat'><b>{distinct}</b>distinct reviewers needed</div>"
@@ -587,10 +610,10 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         parts.append("</ul></div>")
 
     parts.append(
-        "<table><thead><tr><th>PR</th><th>Age</th><th>Codeowners</th></tr></thead><tbody>"
+        "<table><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
+        "<th>Codeowners</th></tr></thead><tbody>"
     )
     for r in rows:
-        draft = "<span class='draft'>draft</span>" if r["draft"] else ""
         if r["codeowners"]:
             owners = "".join(
                 f"<span class='owner'>@{html.escape(o.lstrip('@'))}</span>"
@@ -598,10 +621,18 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             )
         else:
             owners = "<span class='none'>&mdash; no outstanding codeowners &mdash;</span>"
+        full_title = r["title"]
+        shown = (
+            full_title
+            if len(full_title) <= TITLE_MAX_CHARS
+            else full_title[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+        )
         parts.append(
             "<tr>"
-            f"<td class='pr'><a href='{html.escape(r['url'])}' "
-            f"title='{html.escape(r['title'])}'>{SRC_REPO}#{r['number']}</a>{draft}</td>"
+            f"<td class='pr'><a href='{html.escape(r['url'])}'>"
+            f"{SRC_REPO}#{r['number']}</a></td>"
+            f"<td class='title' title='{html.escape(full_title)}'>"
+            f"{html.escape(shown)}</td>"
             f"<td class='age'>{html.escape(r['age_text'])}</td>"
             f"<td>{owners}</td></tr>"
         )
@@ -609,7 +640,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     parts.append(
         "<footer>Last refreshed "
         f"<strong>{now:%Y-%m-%d %H:%M:%S} UTC</strong>. Refreshed automatically every 3 hours. "
-        "Sorted by PR number, descending. Draft PRs included. "
+        "Sorted by PR number, descending. Draft PRs excluded. "
         "<a href='https://github.com/blozano-tt/tt-metal-pr-review-requests'>Source &amp; assumptions</a>."
         "</footer>"
     )

@@ -7,9 +7,9 @@ A small static site that answers one question for every open pull request in
 
 **Live page:** <https://blozano-tt.github.io/tt-metal-pr-review-requests/>
 
-The page is a three-column table — **PR**, **Age**, **Codeowners** — covering
-every open PR created in the last 3 months, sorted by PR number.
-A machine-readable `data.json` is published alongside it.
+The page is a four-column table — **PR**, **Title**, **Age**, **Codeowners** —
+covering every open, non-draft PR created in the last 2 months, sorted by PR
+number. A machine-readable `data.json` is published alongside it.
 
 ## How it works
 
@@ -17,7 +17,7 @@ A machine-readable `data.json` is published alongside it.
 
 1. Reads `.github/CODEOWNERS` from the tt-metal default branch (current rules;
    no historical reconstruction).
-2. Lists open PRs newest-first and stops at the 3-month cutoff.
+2. Lists open PRs newest-first, drops drafts, and stops at the 2-month cutoff.
 3. For each PR, collects the changed files and the review history.
 4. Maps each changed file to its owning CODEOWNERS line (**last matching
    pattern wins**, per GitHub's documented precedence), dedupes the distinct
@@ -63,10 +63,22 @@ These were judgement calls. They're easy to flip — say the word.
    call — the request said "sorted by PR number" without a direction. Flip
    `reverse=True` in `build_rows()` if ascending is preferred.
 
-4. **Draft PRs are included.** The request said "open PRs" and didn't exclude
-   drafts. Drafts are tagged with a small `draft` chip in the PR column.
+4. **Draft PRs are excluded.** (This reverses an earlier assumption: the
+   original request only said "open PRs", so drafts were initially included.)
+   GitHub's GraphQL `pullRequests` connection has no server-side draft filter,
+   so drafts are dropped client-side in `fetch_prs()`, with a second check in
+   `build_rows()` as a safety net. Set `INCLUDE_DRAFTS = True` to restore them.
 
-5. **Only individuals are listed, never teams.** Team handles are expanded to
+5. **The window is the trailing 2 months.** (Also reduced from an earlier
+   3 months.) Controlled by `MONTHS_BACK`; the cutoff is computed per run as
+   calendar months before the run time, with the day clamped to the target
+   month's length.
+
+6. **Long titles are truncated** at `TITLE_MAX_CHARS` (110) with an ellipsis, so
+   one very long title can't blow out the table layout. The full untruncated
+   title is preserved as the cell's `title` tooltip and in `data.json`.
+
+7. **Only individuals are listed, never teams.** Team handles are expanded to
    member logins. If a team cannot be read (see below) the raw `@org/team`
    handle is shown as a fallback rather than silently dropped, and a warning is
    surfaced both in the build log and in a banner on the page.
