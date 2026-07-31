@@ -84,6 +84,28 @@ These were judgement calls. They're easy to flip — say the word.
    handle is shown as a fallback rather than silently dropped, and a warning is
    surfaced both in the build log and in a banner on the page.
 
+### Stat tiles link to GitHub — and are approximations
+
+The summary tiles above the table link through to the equivalent search on
+`github.com/tenstorrent/tt-metal/pulls`. All tiles share the same base filters
+as this page's dataset — `is:pr is:open -is:draft created:>=<cutoff>` — plus:
+
+| Tile | Extra qualifier |
+| --- | --- |
+| open PRs (non-draft) | *(none)* |
+| awaiting codeowner approval | `review:required` |
+| no outstanding codeowners | `review:approved` |
+| distinct reviewers needed | *not linked* |
+
+**These counts will not match GitHub's exactly, by design.** GitHub's search has
+no qualifier for "this PR has at least one CODEOWNERS group with no approval
+from any of its members" — which is precisely what this page computes.
+`review:required` and `review:approved` are the closest supported qualifiers, so
+the linked searches are a best-effort neighbourhood, not a reproduction of the
+page's own numbers. Each tile's tooltip says so. "Distinct reviewers needed" has
+no sensible GitHub-side equivalent at all, so it is deliberately left as plain
+text rather than forced into a nonsensical link.
+
 ### CODEOWNERS pattern matching
 
 Matching uses [`pathspec`](https://pypi.org/project/pathspec/)'s `gitwildmatch`

@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import pathspec
 import requests
@@ -551,7 +552,10 @@ h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
 .stats { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 20px; }
 .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px;
   padding:8px 14px; font-size:13px; }
-.stat b { font-size:17px; display:block; }
+.stat b { font-size:17px; display:block; color:var(--text); }
+a.stat { color:var(--link); text-decoration:none; transition:border-color .12s ease; }
+a.stat:hover, a.stat:focus-visible { border-color:var(--link); text-decoration:underline; }
+a.stat::after { content:" \2197"; font-size:11px; opacity:.75; }
 table { width:100%; border-collapse: collapse; background:var(--panel);
   border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
@@ -575,11 +579,53 @@ footer { color:var(--muted); font-size:12px; margin-top:24px; }
 """
 
 
+def pulls_url(*qualifiers: str) -> str:
+    """Build a github.com PR-search URL from real, supported search qualifiers."""
+    query = " ".join(qualifiers)
+    return (
+        f"https://github.com/{SRC_OWNER}/{SRC_REPO}/pulls"
+        f"?{urlencode({'q': query})}"
+    )
+
+
 def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     total = len(rows)
     blocked = sum(1 for r in rows if r["codeowners"])
     clear = total - blocked
     distinct = len({o for r in rows for o in r["codeowners"]})
+
+    # Base filters mirror this page's dataset: open, non-draft, within the window.
+    base = ("is:pr", "is:open", "-is:draft", f"created:>={cutoff:%Y-%m-%d}")
+
+    # NOTE: GitHub has no search qualifier for "has an unsatisfied CODEOWNERS
+    # group", which is what this page actually computes. The review:* qualifiers
+    # below are the closest supported approximations, so the counts shown here
+    # will not match GitHub's result counts exactly. The tooltips say so.
+    approx = (
+        " Approximate: GitHub has no search qualifier for "
+        "'unsatisfied CODEOWNERS group', so this count will not match exactly."
+    )
+    tiles = [
+        (
+            total,
+            "open PRs (non-draft)",
+            pulls_url(*base),
+            "All open, non-draft PRs created in this window, on GitHub.",
+        ),
+        (
+            blocked,
+            "awaiting codeowner approval",
+            pulls_url(*base, "review:required"),
+            "PRs GitHub still marks as requiring review (review:required)." + approx,
+        ),
+        (
+            clear,
+            "no outstanding codeowners",
+            pulls_url(*base, "review:approved"),
+            "PRs GitHub marks as approved (review:approved)." + approx,
+        ),
+        (distinct, "distinct reviewers needed", None, None),
+    ]
 
     parts = [
         "<!doctype html>",
@@ -594,11 +640,16 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "The <em>Codeowners</em> column lists the individual accounts whose approval "
         "would still unblock the PR.</p>",
         "<div class='stats'>"
-        f"<div class='stat'><b>{total}</b>open PRs (non-draft)</div>"
-        f"<div class='stat'><b>{blocked}</b>awaiting codeowner approval</div>"
-        f"<div class='stat'><b>{clear}</b>no outstanding codeowners</div>"
-        f"<div class='stat'><b>{distinct}</b>distinct reviewers needed</div>"
-        "</div>",
+        + "".join(
+            (
+                f"<a class='stat' href='{html.escape(url)}' "
+                f"title='{html.escape(tip)}'><b>{value}</b>{label}</a>"
+            )
+            if url
+            else f"<div class='stat'><b>{value}</b>{label}</div>"
+            for value, label, url, tip in tiles
+        )
+        + "</div>",
     ]
 
     if WARNINGS:
