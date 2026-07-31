@@ -565,20 +565,23 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
 # (an up-arrow glyph) into Python's octal escape \21 followed by a literal "97",
 # which rendered a stray "97" after every linked stat tile.
 CSS = r"""
+/* Layout intent: the fractal is meant to be SEEN. Every piece of text lives on
+   its own near-opaque card, which keeps contrast a fixed, checkable number; the
+   scrim is then kept deliberately light so the image stays vivid in all the
+   negative space around those cards (gutters, hero band, gaps, footer). */
 :root {
-  --bg: #0f1116; --panel: rgba(22,25,32,.90); --panel-solid: #161920;
-  --line: #2c313d; --text: #e6e9ef; --muted: #a3abbd; --link: #8cc0ff;
-  --accent: #5ce68d; --chip: rgba(38,44,58,.92);
-  --scrim: rgba(8,10,16,.80); --img-filter: brightness(.85) saturate(1.05);
+  --bg: #0f1116; --panel: rgba(20,23,30,.95); --panel-solid: #14171e;
+  --line: #333a49; --text: #e6e9ef; --muted: #a3abbd; --link: #8cc0ff;
+  --accent: #5ce68d; --chip: rgba(38,44,58,.95);
+  --scrim: rgba(8,10,16,.34); --img-filter: brightness(.92) saturate(1.1);
+  --shadow: 0 8px 30px rgba(0,0,0,.50);
 }
 @media (prefers-color-scheme: light) {
-  /* Muted/link are darker than the usual light-theme values, and the scrim is
-     heavier, because header text sits directly over the fractal: its black
-     interior is the worst case and these values keep it above WCAG AA there. */
-  :root { --bg:#f7f8fa; --panel:rgba(255,255,255,.93); --panel-solid:#fff;
-          --line:#dfe3ea; --text:#1a1d24; --muted:#464e5c; --link:#0a44a0;
-          --accent:#0f6b35; --chip:rgba(238,241,246,.95);
-          --scrim: rgba(247,248,250,.86); --img-filter: brightness(1.15) saturate(1); }
+  :root { --bg:#f7f8fa; --panel:rgba(255,255,255,.96); --panel-solid:#fff;
+          --line:#dfe3ea; --text:#1a1d24; --muted:#4a5260; --link:#0a44a0;
+          --accent:#0f6b35; --chip:rgba(238,241,246,.96);
+          --scrim: rgba(247,248,250,.46); --img-filter: brightness(1.05) saturate(1);
+          --shadow: 0 8px 30px rgba(18,22,40,.28); }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -599,20 +602,26 @@ body::after { background:var(--scrim); z-index:-1; }
 @media (prefers-reduced-motion: reduce) {
   body::before { background-attachment: scroll; }
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
+/* Roomy gutters + a tall hero band and footer gap: this is the negative space
+   the fractal actually shows through, so it is deliberately generous. */
+.wrap { max-width: 1120px; margin: 0 auto; padding: 128px 30px 132px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow); }
+.hero { padding:20px 22px; margin:0 0 18px; }
 h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
-.sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.sub { color: var(--muted); font-size: 13px; margin: 0; }
 .sub a { color: var(--link); }
+footer.card { padding:14px 18px; margin-top:22px; }
 .stats { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 20px; }
-.stat { background:var(--panel); border:1px solid var(--line); border-radius:8px;
-  padding:8px 14px; font-size:13px; }
+.stat { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:var(--shadow); padding:10px 15px; font-size:13px; }
 .stat b { font-size:17px; display:block; color:var(--text); }
 a.stat { color:var(--link); text-decoration:none; transition:border-color .12s ease; }
 a.stat:hover, a.stat:focus-visible { border-color:var(--link); text-decoration:underline; }
 a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
 .filterbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-  background:var(--panel); border:1px solid var(--line); border-radius:10px;
-  padding:12px 14px; margin:0 0 16px; font-size:13px; }
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow); padding:12px 15px; margin:0 0 18px; font-size:13px; }
 .filterbar[hidden] { display:none; }
 .filterbar.active { border-color:var(--link); }
 .filterbar label { color:var(--muted); }
@@ -629,11 +638,12 @@ tr[hidden] { display:none; }
    clip context that silently kills `position:sticky` on the header. Use
    border-collapse:separate + per-corner radii so the header can actually pin. */
 table { width:100%; border-collapse:separate; border-spacing:0;
-  background:var(--panel); border:1px solid var(--line); border-radius:10px; }
-thead th:first-child { border-top-left-radius:9px; }
-thead th:last-child { border-top-right-radius:9px; }
-tbody tr:last-child td:first-child { border-bottom-left-radius:9px; }
-tbody tr:last-child td:last-child { border-bottom-right-radius:9px; }
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow); }
+thead th:first-child { border-top-left-radius:11px; }
+thead th:last-child { border-top-right-radius:11px; }
+tbody tr:last-child td:first-child { border-bottom-left-radius:11px; }
+tbody tr:last-child td:last-child { border-bottom-right-radius:11px; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
   vertical-align: top; }
 /* Sticky header must be fully opaque or rows ghost through it as they scroll. */
@@ -654,9 +664,9 @@ a:hover { text-decoration: underline; }
   white-space:nowrap; }
 .none { color: var(--accent); }
 .warnbox { background:var(--panel); border:1px solid var(--line); border-left:3px solid #d29922;
-  border-radius:8px; padding:12px 16px; margin-bottom:20px; font-size:13px; }
+  border-radius:12px; box-shadow:var(--shadow); padding:12px 16px; margin-bottom:18px; font-size:13px; }
 .warnbox ul { margin:6px 0 0; padding-left:18px; }
-footer { color:var(--muted); font-size:12px; margin-top:24px; }
+footer { color:var(--muted); font-size:12px; }
 """
 
 
@@ -793,12 +803,13 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
         "<title>tt-metal open PRs &middot; outstanding codeowner reviews</title>",
         f"<style>{CSS}</style></head><body><div class='wrap'>",
-        "<h1>tt-metal &mdash; outstanding codeowner reviews</h1>",
+        "<div class='card hero'>"
+        "<h1>tt-metal &mdash; outstanding codeowner reviews</h1>"
         "<p class='sub'>Open, non-draft pull requests in "
         f"<a href='https://github.com/{SRC_OWNER}/{SRC_REPO}'>{SRC_OWNER}/{SRC_REPO}</a> "
         f"created on or after {cutoff:%Y-%m-%d} (last {MONTHS_BACK} months). "
         "The <em>Codeowners</em> column lists the individual accounts whose approval "
-        "would still unblock the PR.</p>",
+        "would still unblock the PR.</p></div>",
         "<div class='stats'>"
         + "".join(
             (
@@ -814,7 +825,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
 
     if WARNINGS:
         uniq = sorted(set(WARNINGS))
-        parts.append("<div class='warnbox'><strong>Build warnings</strong><ul>")
+        parts.append("<div class='warnbox card'><strong>Build warnings</strong><ul>")
         parts.extend(f"<li>{html.escape(w)}</li>" for w in uniq[:20])
         if len(uniq) > 20:
             parts.append(f"<li>&hellip; and {len(uniq) - 20} more</li>")
@@ -822,7 +833,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
 
     # Hidden until the script runs, so users without JS aren't shown a dead control.
     parts.append(
-        "<div class='filterbar' id='filterBar' hidden>"
+        "<div class='filterbar card' id='filterBar' hidden>"
         "<label for='ownerFilter'>Filter by GitHub username</label>"
         "<input id='ownerFilter' type='search' autocomplete='off' spellcheck='false'"
         " placeholder='e.g. afuller-TT'>"
@@ -870,7 +881,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     )
     parts.append("</tbody></table>")
     parts.append(
-        "<footer>Last refreshed "
+        "<footer class='card'>Last refreshed "
         f"<strong>{now:%Y-%m-%d %H:%M:%S} UTC</strong>. Refreshed automatically every 3 hours. "
         "Sorted by PR number, ascending. Draft PRs excluded. "
         "<a href='https://github.com/blozano-tt/tt-metal-pr-review-requests'>Source &amp; assumptions</a>."

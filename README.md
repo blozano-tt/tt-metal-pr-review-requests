@@ -36,20 +36,37 @@ and committed as a repo asset — nothing is computed in the browser, and the si
 build has no numpy/Pillow dependency. `generate.py` just copies `assets/` into the
 published output.
 
-Contrast treatment, since this is a dense data table:
+**Layout approach — "cards floating on the fractal".** The first attempt used a
+heavy scrim (80–86%) over a nearly edge-to-edge content column, which washed the
+image out to the point of invisibility. The fix inverts the trade:
 
-- two fixed full-viewport layers behind everything — the image, then a **scrim**
-  (80% in dark mode, 86% in light) that buys back contrast;
-- content panels are **semi-opaque** (90–93%) so the fractal reads as texture
-  behind them rather than through the text;
-- the sticky table header is **fully opaque**, or rows ghost through it as they scroll;
-- in light mode the muted and link colours are darkened, because header text sits
-  directly on the scrim and the fractal's black interior is the worst case there.
+- the **scrim is light** (34% dark / 46% light), so wherever the image shows, it
+  shows *vividly* rather than as a grey ghost;
+- every text-bearing block — header, stat tiles, filter bar, table, footer — is a
+  **near-opaque card** (95–96%) with a drop shadow, so contrast is a fixed,
+  checkable number that does not depend on which fractal pixel is behind it;
+- the page has **generous negative space** for the image to occupy: a 128px hero
+  band, a 132px footer gap, ~110px side gutters (1120px content column), and
+  visible gaps between the cards;
+- the sticky table header is **fully opaque**, or rows ghost through it as they scroll.
 
-Verified against WCAG using the fractal's extreme pixels (pure black and the
-brightest gold) as the backdrop: dark mode is AAA nearly everywhere and AA at
-worst; light mode clears AA with margin. JPEG rather than PNG — this is a smooth
-photographic gradient where PNG runs to several megabytes.
+Net effect: roughly **44% of the viewport is bare fractal** at the top of the
+page and **~17%** once scrolled deep into the table (the side gutters).
+
+Contrast is verified against the image's *extreme* pixels (pure black interior
+and brightest gold) composited through both the scrim and the card:
+
+| | worst-case ratio | |
+|---|---|---|
+| Dark mode | **7.30:1** | AAA across the board |
+| Light mode | **6.30:1** | comfortably above the 4.5:1 AA bar |
+
+Counter-intuitively this is *better* than the heavy-scrim version, which bottomed
+out at 4.02:1 (a fail) because header text sat directly on the scrim. Putting the
+text on cards decoupled readability from the background entirely.
+
+JPEG rather than PNG — this is a smooth photographic gradient where PNG runs to
+several megabytes.
 
 ### Filtering by username
 
