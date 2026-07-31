@@ -7,9 +7,10 @@ A small static site that answers one question for every open pull request in
 
 **Live page:** <https://blozano-tt.github.io/tt-metal-pr-review-requests/>
 
-The page is a four-column table — **PR**, **Title**, **Age**, **Codeowners** —
-covering every open, non-draft PR created in the last 2 months, sorted by PR
-number. A machine-readable `data.json` is published alongside it.
+The page is a six-column table — **PR**, **Title**, **Age**, **Codeowners**,
+**Author**, **Status** — covering every open, non-draft PR created in the last
+2 months, sorted by PR number. A machine-readable `data.json` is published
+alongside it.
 
 ## How it works
 
@@ -24,6 +25,44 @@ number. A machine-readable `data.json` is published alongside it.
    owner-groups, expands `@org/team` entries to individual members, drops any
    group that already has an approval, and unions what's left.
 5. Renders `public/index.html` (+ `public/data.json`) and deploys to Pages.
+
+### The Status column
+
+A PR can be stuck for several unrelated reasons at once — approved but
+conflicting, or unapproved *and* failing CI — so **Status is three independent
+axes rather than one collapsed verdict**. Each cell carries one badge per axis
+(occasionally two on the review axis), and an on-page legend above the table
+spells all of them out. Colour is a redundant cue only: every badge also has an
+emoji and a text label, so it survives monochrome and colour-blind viewing.
+
+| Axis | Badges | Source |
+| --- | --- | --- |
+| Review | ✅ approved · 👀 awaiting review · ✋ changes requested | this page's own CODEOWNERS computation |
+| Conflicts | 🔀 no conflicts · ⚠️ conflicts · ❔ merge unknown | GraphQL `PullRequest.mergeable` |
+| CI checks | 🟢 checks pass · 🔴 checks fail · 🟡 checks pending · ⚪ no checks | `commits(last:1) … statusCheckRollup.state` |
+
+Notes on the review axis:
+
+- **"Approved" is exactly "the Codeowners column is empty"** — the same
+  outstanding-codeowners set described in assumption 2, not GitHub's own
+  `reviewDecision`. The two can legitimately disagree (this page strips the
+  bypass team, and resolves groups itself), and a Status badge contradicting
+  the cell next to it would be worse than either answer alone.
+- **"Changes requested"** uses the same most-recent-decisive-state-per-reviewer
+  map (`latest_review_states()`) that feeds the approval check, so `COMMENTED`
+  does not clear it either.
+- The two are **additive, not a precedence chain**. "Every codeowner group has
+  an approval *and* somebody has requested changes" is a real, genuinely
+  blocking combination (2 of 449 PRs at the time of writing), so such a row
+  shows both ✅ and ✋ rather than silently dropping one.
+
+`mergeable` is `UNKNOWN` when GitHub has not finished computing mergeability —
+it is computed lazily on access, so a couple of rows per build land there. A
+missing `statusCheckRollup` (a PR with no CI at all) renders ⚪ *no checks*
+rather than a false "failing".
+
+Both fields are cheap scalar/shallow additions to the existing batched query;
+API cost is still dominated by the `files` and `reviews` connections.
 
 ### Background image
 

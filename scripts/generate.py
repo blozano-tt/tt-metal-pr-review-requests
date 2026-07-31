@@ -332,6 +332,11 @@ query($owner:String!, $name:String!, $cursor:String, $prs:Int!) {
         title
         createdAt
         isDraft
+        author { login url }
+        mergeable
+        commits(last: 1) {
+          nodes { commit { statusCheckRollup { state } } }
+        }
         files(first: 100) {
           pageInfo { hasNextPage endCursor }
           nodes { path }
@@ -472,8 +477,14 @@ def complete_pr(token: str, pr: dict) -> tuple[list[str], list[dict]]:
 DECISIVE_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 
 
-def approvers(reviews: list[dict]) -> set[str]:
-    """Logins whose most recent *decisive* review state is APPROVED."""
+def latest_review_states(reviews: list[dict]) -> dict[str, str]:
+    """
+    Map lowercased login -> that reviewer's most recent *decisive* review state.
+
+    Single source of truth for both the Codeowners column (who has approved)
+    and the Status column's review axis (who has requested changes), so the two
+    can never disagree.
+    """
     latest: dict[str, tuple[str, str]] = {}
     for rv in reviews:
         author = (rv.get("author") or {}).get("login")
@@ -484,7 +495,120 @@ def approvers(reviews: list[dict]) -> set[str]:
         prev = latest.get(author.lower())
         if prev is None or when >= prev[0]:
             latest[author.lower()] = (when, state)
-    return {login for login, (_, state) in latest.items() if state == "APPROVED"}
+    return {login: state for login, (_, state) in latest.items()}
+
+
+def approvers(reviews: list[dict]) -> set[str]:
+    """Logins whose most recent *decisive* review state is APPROVED."""
+    return {
+        login for login, state in latest_review_states(reviews).items()
+        if state == "APPROVED"
+    }
+
+
+# --------------------------------------------------------------------------
+# Status badges
+# --------------------------------------------------------------------------
+
+# Single vocabulary shared by the Status cells and the on-page legend, so the
+# two can never drift apart. Keyed by badge id:
+#   (emoji, short label used in the cell, long label used in the legend,
+#    CSS tone class, tooltip / legend explanation)
+#
+# Three independent axes. A PR can be blocked on more than one at once, so the
+# cell renders one badge per axis rather than a single collapsed verdict.
+BADGES: dict[str, tuple[str, str, str, str, str]] = {
+    # Review axis -- driven entirely by the same data as the Codeowners column.
+    "review-approved": (
+        "✅", "approved", "approved", "ok",
+        "Every CODEOWNERS group with a say on this PR already has an approval "
+        "(the Codeowners column is empty).",
+    ),
+    "review-awaiting": (
+        "👀", "awaiting review", "awaiting review", "muted",
+        "At least one CODEOWNERS group still has no approval from any of its "
+        "members -- see the Codeowners column.",
+    ),
+    "review-changes": (
+        "✋", "changes requested", "changes requested", "bad",
+        "At least one reviewer's most recent decisive review state is "
+        "CHANGES_REQUESTED.",
+    ),
+    # Merge axis -- GitHub's `mergeable` field.
+    "merge-clean": (
+        "🔀", "no conflicts", "no merge conflicts", "muted",
+        "GitHub reports the branch as mergeable into its base.",
+    ),
+    "merge-conflict": (
+        "⚠️", "conflicts", "merge conflicts", "bad",
+        "GitHub reports conflicts with the base branch; the author needs to "
+        "rebase or merge.",
+    ),
+    "merge-unknown": (
+        "❔", "merge unknown", "mergeability not yet known", "muted",
+        "GitHub computes mergeability lazily and had not finished when this "
+        "page was built.",
+    ),
+    # CI axis -- the status-check rollup of the PR's most recent commit.
+    "checks-pass": (
+        "🟢", "checks pass", "checks passing", "ok",
+        "The status-check rollup on the latest commit is SUCCESS.",
+    ),
+    "checks-fail": (
+        "🔴", "checks fail", "checks failing", "bad",
+        "The status-check rollup on the latest commit is FAILURE or ERROR.",
+    ),
+    "checks-pending": (
+        "🟡", "checks pending", "checks still running", "warn",
+        "The status-check rollup on the latest commit is PENDING or EXPECTED.",
+    ),
+    "checks-none": (
+        "⚪", "no checks", "no checks reported", "muted",
+        "The latest commit has no status-check rollup at all.",
+    ),
+}
+
+MERGEABLE_BADGE = {
+    "MERGEABLE": "merge-clean",
+    "CONFLICTING": "merge-conflict",
+    "UNKNOWN": "merge-unknown",
+}
+
+CHECKS_BADGE = {
+    "SUCCESS": "checks-pass",
+    "FAILURE": "checks-fail",
+    "ERROR": "checks-fail",
+    "PENDING": "checks-pending",
+    "EXPECTED": "checks-pending",
+}
+
+
+def checks_state(pr: dict) -> str | None:
+    """
+    Rollup state of the PR's latest commit, or None when GitHub reports no
+    rollup (a PR with no CI configured, or with checks not yet created).
+    """
+    nodes = ((pr.get("commits") or {}).get("nodes")) or []
+    if not nodes:
+        return None
+    rollup = ((nodes[0] or {}).get("commit") or {}).get("statusCheckRollup")
+    if not rollup:
+        return None
+    return rollup.get("state")
+
+
+def status_badges(outstanding: bool, changes_requested: bool,
+                  mergeable: str | None, checks: str | None) -> list[str]:
+    """Badge ids for one PR: review axis (1-2), merge axis (1), CI axis (1)."""
+    ids = ["review-awaiting" if outstanding else "review-approved"]
+    # Deliberately additive, not a precedence chain: "all codeowner groups have
+    # an approval AND someone has requested changes" is a real, and genuinely
+    # blocking, combination. Collapsing it either way would lose information.
+    if changes_requested:
+        ids.append("review-changes")
+    ids.append(MERGEABLE_BADGE.get(mergeable or "", "merge-unknown"))
+    ids.append(CHECKS_BADGE.get(checks or "", "checks-none"))
+    return ids
 
 
 def human_age(created: datetime, now: datetime) -> tuple[str, int]:
@@ -513,7 +637,12 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
         if pr["isDraft"] and not INCLUDE_DRAFTS:
             continue
         files, reviews = complete_pr(token, pr)
-        approved_by = approvers(reviews)
+        # One pass over the review history feeds both columns.
+        latest_states = latest_review_states(reviews)
+        approved_by = {l for l, s in latest_states.items() if s == "APPROVED"}
+        changes_requested_by = sorted(
+            l for l, s in latest_states.items() if s == "CHANGES_REQUESTED"
+        )
 
         # Distinct owner-groups across all changed files (last match wins per file).
         groups: set[tuple[str, ...]] = set()
@@ -539,6 +668,10 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
 
         created = datetime.fromisoformat(pr["createdAt"].replace("Z", "+00:00"))
         age_text, age_days = human_age(created, now)
+        # author is null for PRs opened by a since-deleted account.
+        author = pr.get("author") or {}
+        mergeable = pr.get("mergeable")
+        checks = checks_state(pr)
         rows.append(
             {
                 "number": pr["number"],
@@ -551,6 +684,14 @@ def build_rows(token: str, rules: list[CodeownersRule], teams: TeamResolver,
                 "files": len(files),
                 "groups": len(groups),
                 "codeowners": sorted(outstanding, key=str.lower),
+                "author": author.get("login"),
+                "author_url": author.get("url"),
+                "changes_requested_by": changes_requested_by,
+                "mergeable": mergeable,
+                "checks": checks,
+                "badges": status_badges(
+                    bool(outstanding), bool(changes_requested_by), mergeable, checks
+                ),
             }
         )
         if i % 50 == 0 or i == len(prs):
@@ -573,6 +714,7 @@ CSS = r"""
   --bg: #0f1116; --panel: rgba(20,23,30,.95); --panel-solid: #14171e;
   --line: #333a49; --text: #e6e9ef; --muted: #a3abbd; --link: #8cc0ff;
   --accent: #5ce68d; --chip: rgba(38,44,58,.95);
+  --bad: #ff8b8b; --warn: #ffc457;
   --scrim: rgba(8,10,16,.34); --img-filter: brightness(.92) saturate(1.1);
   --shadow: 0 8px 30px rgba(0,0,0,.50);
 }
@@ -580,6 +722,7 @@ CSS = r"""
   :root { --bg:#f7f8fa; --panel:rgba(255,255,255,.96); --panel-solid:#fff;
           --line:#dfe3ea; --text:#1a1d24; --muted:#4a5260; --link:#0a44a0;
           --accent:#0f6b35; --chip:rgba(238,241,246,.96);
+          --bad:#a51023; --warn:#7a4a00;
           --scrim: rgba(247,248,250,.46); --img-filter: brightness(1.05) saturate(1);
           --shadow: 0 8px 30px rgba(18,22,40,.28); }
 }
@@ -654,15 +797,37 @@ td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
 td.age { white-space:nowrap; color:var(--muted); font-variant-numeric: tabular-nums; }
 /* `overflow-wrap: anywhere` also shrinks the column's min-content width, which
    let the owner chips squeeze Title down to a few characters per line. */
-td.pr, th:nth-child(1), td.age, th:nth-child(3) { width:1%; }
-th:nth-child(2) { width:32%; }
-td.title { min-width:240px; overflow-wrap:break-word; }
+td.pr, th:nth-child(1), td.age, th:nth-child(3),
+td.author, th:nth-child(5), td.status, th:nth-child(6) { width:1%; }
+/* Title gave up width when Author and Status were added; Codeowners chips still
+   get whatever is left over. */
+th:nth-child(2) { width:24%; }
+td.title { min-width:200px; overflow-wrap:break-word; }
+td.author { white-space:nowrap; }
+/* Wide enough that the longest badge ("changes requested") never wraps
+   mid-label, narrow enough that badges stack instead of stretching the row. */
+td.status { min-width:152px; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .owner { display:inline-block; background:var(--chip); border:1px solid var(--line);
   border-radius:5px; padding:1px 6px; margin:2px 3px 2px 0; font-size:13px;
   white-space:nowrap; }
 .none { color: var(--accent); }
+/* Status badges. Colour is a redundant cue only: every badge also carries an
+   emoji and a text label, so the cell still reads correctly in monochrome. */
+.badge { display:inline-block; background:var(--chip); border:1px solid var(--line);
+  border-radius:5px; padding:1px 6px; margin:2px 3px 2px 0; font-size:12px;
+  white-space:nowrap; color:var(--muted); }
+.badge.ok { color:var(--accent); }
+.badge.bad { color:var(--bad); }
+.badge.warn { color:var(--warn); }
+.badge i { font-style:normal; margin-right:4px; }
+.legend { padding:11px 15px; margin:0 0 18px; font-size:12px; color:var(--muted); }
+.legend .row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+  margin-top:6px; }
+.legend .row:first-of-type { margin-top:4px; }
+.legend .axis { min-width:74px; color:var(--text); font-weight:600; }
+.legend strong { color:var(--text); font-size:13px; }
 .warnbox { background:var(--panel); border:1px solid var(--line); border-left:3px solid #d29922;
   border-radius:12px; box-shadow:var(--shadow); padding:12px 16px; margin-bottom:18px; font-size:13px; }
 .warnbox ul { margin:6px 0 0; padding-left:18px; }
@@ -758,6 +923,36 @@ def pulls_url(*qualifiers: str) -> str:
     )
 
 
+def badge_html(badge_id: str, label_index: int = 1) -> str:
+    """Render one status badge. label_index 1 = short (cell), 2 = long (legend)."""
+    emoji, short, long, tone, tip = BADGES[badge_id]
+    label = short if label_index == 1 else long
+    return (
+        f"<span class='badge {tone}' title='{html.escape(tip)}'>"
+        f"<i aria-hidden='true'>{emoji}</i>{html.escape(label)}</span>"
+    )
+
+
+def legend_html() -> str:
+    axes = [
+        ("Review", ["review-approved", "review-awaiting", "review-changes"]),
+        ("Conflicts", ["merge-clean", "merge-conflict", "merge-unknown"]),
+        ("CI checks", ["checks-pass", "checks-fail", "checks-pending", "checks-none"]),
+    ]
+    rows = "".join(
+        f"<div class='row'><span class='axis'>{axis}</span>"
+        + "".join(badge_html(b, 2) for b in ids)
+        + "</div>"
+        for axis, ids in axes
+    )
+    return (
+        "<div class='legend card'><strong>Status legend</strong> &mdash; three "
+        "independent reasons a PR may not be merged yet; a PR can show more than "
+        "one. Hover any badge for detail."
+        f"{rows}</div>"
+    )
+
+
 def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
     total = len(rows)
     blocked = sum(1 for r in rows if r["codeowners"])
@@ -809,7 +1004,9 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         f"<a href='https://github.com/{SRC_OWNER}/{SRC_REPO}'>{SRC_OWNER}/{SRC_REPO}</a> "
         f"created on or after {cutoff:%Y-%m-%d} (last {MONTHS_BACK} months). "
         "The <em>Codeowners</em> column lists the individual accounts whose approval "
-        "would still unblock the PR.</p></div>",
+        "would still unblock the PR; <em>Status</em> shows why it is not merged yet "
+        "across three independent axes (review, merge conflicts, CI checks)."
+        "</p></div>",
         "<div class='stats'>"
         + "".join(
             (
@@ -842,9 +1039,11 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "</div>"
     )
 
+    parts.append(legend_html())
+
     parts.append(
         "<table id='prTable'><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
-        "<th>Codeowners</th></tr></thead><tbody>"
+        "<th>Codeowners</th><th>Author</th><th>Status</th></tr></thead><tbody>"
     )
     for r in rows:
         if r["codeowners"]:
@@ -864,6 +1063,13 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         owners_attr = " ".join(
             "@" + o.lstrip("@").lower() for o in r["codeowners"]
         )
+        if r["author"]:
+            handle = html.escape(r["author"])
+            url = r["author_url"] or f"https://github.com/{r['author']}"
+            author_cell = f"<a href='{html.escape(url)}'>@{handle}</a>"
+        else:
+            author_cell = "<span class='badge muted'>unknown</span>"
+        status_cell = "".join(badge_html(b) for b in r["badges"])
         parts.append(
             f"<tr data-owners='{html.escape(owners_attr)}'>"
             f"<td class='pr'><a href='{html.escape(r['url'])}'>"
@@ -871,10 +1077,12 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             f"<td class='title' title='{html.escape(full_title)}'>"
             f"{html.escape(shown)}</td>"
             f"<td class='age'>{html.escape(r['age_text'])}</td>"
-            f"<td>{owners}</td></tr>"
+            f"<td>{owners}</td>"
+            f"<td class='author'>{author_cell}</td>"
+            f"<td class='status'>{status_cell}</td></tr>"
         )
     parts.append(
-        "<tr id='noMatches' hidden><td colspan='4'>"
+        "<tr id='noMatches' hidden><td colspan='6'>"
         "No PRs are waiting on that username. "
         "<a href='#' id='noMatchesClear'>Clear the filter</a> to see all PRs."
         "</td></tr>"
@@ -954,6 +1162,11 @@ def main() -> None:
                         "changed_files": r["files"],
                         "owner_groups": r["groups"],
                         "codeowners": r["codeowners"],
+                        "author": r["author"],
+                        "changes_requested_by": r["changes_requested_by"],
+                        "mergeable": r["mergeable"],
+                        "checks": r["checks"],
+                        "status": r["badges"],
                     }
                     for r in rows
                 ],
