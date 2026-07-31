@@ -126,25 +126,32 @@ ending in `/`, and patterns containing `**`, keep normal recursive behaviour.
 Without this correction the leading `/*` rule would have silently attributed
 every otherwise-unowned file in the repo to the top-level owners.
 
-## Optional secret: `TT_METAL_READ_TOKEN`
+## Optional secret: `TT_METAL_TOKEN`
 
 The workflow passes both tokens to the generator:
 
 ```yaml
-GH_TOKEN: ${{ secrets.TT_METAL_READ_TOKEN }}
+GH_TOKEN: ${{ secrets.TT_METAL_TOKEN }}
 GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 `get_token()` probes each in turn against `/rate_limit` (which costs no quota)
 and uses the first that authenticates, preferring `GH_TOKEN`. So a **missing,
-revoked or expired** `TT_METAL_READ_TOKEN` degrades to the automatic token with
-a warning on the page instead of failing the build — which is exactly what
-happened once in practice, when a `TT_METAL_READ_TOKEN` was added whose value
-returned `401 Bad credentials` and took the whole run down.
+revoked or expired** `TT_METAL_TOKEN` degrades to the automatic token with
+a warning on the page instead of failing the build.
 
-**No secret has been created — this is intentional and needs a human decision.**
+That fallback is not hypothetical: an earlier secret was added whose value
+returned `401 Bad credentials`, and because the workflow then selected it with
+`${{ secrets.A || secrets.B }}` — a *presence* test, not a validity test — every
+run failed outright until the probe-and-fall-back logic replaced it.
 
-`TT_METAL_READ_TOKEN` is optional. If you add it, it only needs:
+> **Status:** the generator currently authenticates with the automatic
+> `GITHUB_TOKEN`, so `@tenstorrent/<team>` entries are **not** expanded to
+> individuals and appear as raw team handles on the page. Adding a valid
+> `TT_METAL_TOKEN` fixes that. The build log line `Authenticated with $...`
+> reports which token was actually used on any given run.
+
+`TT_METAL_TOKEN` is optional. If you add it, it only needs:
 
 - **read access to `tenstorrent/tt-metal` contents and pull requests** — trivial,
   since the repo is public; and
