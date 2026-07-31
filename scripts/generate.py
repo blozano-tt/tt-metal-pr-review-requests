@@ -625,8 +625,15 @@ a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
 #filterStatus { color:var(--muted); }
 .filterbar.active #filterStatus { color:var(--text); font-weight:600; }
 tr[hidden] { display:none; }
-table { width:100%; border-collapse: collapse; background:var(--panel);
-  border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+/* `overflow:hidden` would clip the rounded corners for us, but it also creates a
+   clip context that silently kills `position:sticky` on the header. Use
+   border-collapse:separate + per-corner radii so the header can actually pin. */
+table { width:100%; border-collapse:separate; border-spacing:0;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+thead th:first-child { border-top-left-radius:9px; }
+thead th:last-child { border-top-right-radius:9px; }
+tbody tr:last-child td:first-child { border-bottom-left-radius:9px; }
+tbody tr:last-child td:last-child { border-bottom-right-radius:9px; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
   vertical-align: top; }
 /* Sticky header must be fully opaque or rows ghost through it as they scroll. */
