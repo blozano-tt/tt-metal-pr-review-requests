@@ -586,6 +586,21 @@ h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
 a.stat { color:var(--link); text-decoration:none; transition:border-color .12s ease; }
 a.stat:hover, a.stat:focus-visible { border-color:var(--link); text-decoration:underline; }
 a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
+.filterbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; margin:0 0 16px; font-size:13px; }
+.filterbar[hidden] { display:none; }
+.filterbar.active { border-color:var(--link); }
+.filterbar label { color:var(--muted); }
+.filterbar input { background:var(--bg); color:var(--text); font:inherit;
+  border:1px solid var(--line); border-radius:6px; padding:6px 10px; min-width:220px; }
+.filterbar input:focus { outline:none; border-color:var(--link); }
+.filterbar button { background:var(--chip); color:var(--text); font:inherit;
+  border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
+.filterbar button:hover { border-color:var(--link); color:var(--link); }
+#filterStatus { color:var(--muted); }
+.filterbar.active #filterStatus { color:var(--text); font-weight:600; }
+tr[hidden] { display:none; }
 table { width:100%; border-collapse: collapse; background:var(--panel);
   border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line);
@@ -595,7 +610,11 @@ th { position: sticky; top:0; background:var(--panel); font-size:12px;
 tr:last-child td { border-bottom:none; }
 td.pr { white-space:nowrap; font-variant-numeric: tabular-nums; }
 td.age { white-space:nowrap; color:var(--muted); font-variant-numeric: tabular-nums; }
-td.title { max-width: 420px; overflow-wrap: anywhere; }
+/* `overflow-wrap: anywhere` also shrinks the column's min-content width, which
+   let the owner chips squeeze Title down to a few characters per line. */
+td.pr, th:nth-child(1), td.age, th:nth-child(3) { width:1%; }
+th:nth-child(2) { width:32%; }
+td.title { min-width:240px; overflow-wrap:break-word; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .owner { display:inline-block; background:var(--chip); border:1px solid var(--line);
@@ -606,6 +625,85 @@ a:hover { text-decoration: underline; }
   border-radius:8px; padding:12px 16px; margin-bottom:20px; font-size:13px; }
 .warnbox ul { margin:6px 0 0; padding-left:18px; }
 footer { color:var(--muted); font-size:12px; margin-top:24px; }
+"""
+
+
+# Purely client-side: no network calls, no auth, no backend. Matches the typed
+# text against each row's data-owners attribute (lowercased, @-prefixed logins).
+# Raw string so backslashes reach the browser intact (see the CSS note above).
+FILTER_JS = r"""
+(function () {
+  var KEY = 'ttMetalCodeownerFilter';
+  var bar = document.getElementById('filterBar');
+  var input = document.getElementById('ownerFilter');
+  var clearBtn = document.getElementById('ownerFilterClear');
+  var status = document.getElementById('filterStatus');
+  var noMatches = document.getElementById('noMatches');
+  var noMatchesClear = document.getElementById('noMatchesClear');
+  if (!bar || !input) { return; }
+
+  // Only real data rows carry data-owners, so the "no matches" row is excluded.
+  var rows = Array.prototype.slice.call(
+    document.querySelectorAll('#prTable tbody tr[data-owners]')
+  );
+  var total = rows.length;
+
+  function store(value) {
+    try {
+      if (value) { localStorage.setItem(KEY, value); }
+      else { localStorage.removeItem(KEY); }
+    } catch (e) { /* private mode / storage disabled: filtering still works */ }
+  }
+
+  function apply(raw) {
+    var typed = (raw || '').trim();
+    // GitHub logins are case-insensitive; a leading @ is optional.
+    var needle = typed.toLowerCase().replace(/^@+/, '');
+    var shown = 0;
+    for (var i = 0; i < total; i++) {
+      var hit = needle === '' ||
+        rows[i].getAttribute('data-owners').indexOf(needle) !== -1;
+      rows[i].hidden = !hit;
+      if (hit) { shown++; }
+    }
+    if (needle === '') {
+      bar.classList.remove('active');
+      status.textContent = 'Showing all ' + total + ' PRs.';
+      if (noMatches) { noMatches.hidden = true; }
+    } else {
+      bar.classList.add('active');
+      status.textContent = 'Filter active — showing ' + shown + ' of ' +
+        total + ' PRs awaiting ' + typed + '. Clear the box to see all.';
+      if (noMatches) { noMatches.hidden = shown !== 0; }
+    }
+    store(typed);
+  }
+
+  function reset() {
+    input.value = '';
+    apply('');
+    input.focus();
+  }
+
+  input.addEventListener('input', function () { apply(input.value); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { reset(); }
+  });
+  clearBtn.addEventListener('click', reset);
+  if (noMatchesClear) {
+    noMatchesClear.addEventListener('click', function (e) {
+      e.preventDefault();
+      reset();
+    });
+  }
+
+  var saved = '';
+  try { saved = localStorage.getItem(KEY) || ''; } catch (e) { saved = ''; }
+  if (saved) { input.value = saved; }
+
+  bar.hidden = false;   // reveal only once wired up
+  apply(input.value);
+}());
 """
 
 
@@ -690,8 +788,19 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             parts.append(f"<li>&hellip; and {len(uniq) - 20} more</li>")
         parts.append("</ul></div>")
 
+    # Hidden until the script runs, so users without JS aren't shown a dead control.
     parts.append(
-        "<table><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
+        "<div class='filterbar' id='filterBar' hidden>"
+        "<label for='ownerFilter'>Filter by GitHub username</label>"
+        "<input id='ownerFilter' type='search' autocomplete='off' spellcheck='false'"
+        " placeholder='e.g. afuller-TT'>"
+        "<button type='button' id='ownerFilterClear'>Clear</button>"
+        f"<span id='filterStatus'>Showing all {total} PRs.</span>"
+        "</div>"
+    )
+
+    parts.append(
+        "<table id='prTable'><thead><tr><th>PR</th><th>Title</th><th>Age</th>"
         "<th>Codeowners</th></tr></thead><tbody>"
     )
     for r in rows:
@@ -708,8 +817,12 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             if len(full_title) <= TITLE_MAX_CHARS
             else full_title[: TITLE_MAX_CHARS - 1].rstrip() + "…"
         )
+        # Lowercased, @-prefixed owner list used by the client-side filter.
+        owners_attr = " ".join(
+            "@" + o.lstrip("@").lower() for o in r["codeowners"]
+        )
         parts.append(
-            "<tr>"
+            f"<tr data-owners='{html.escape(owners_attr)}'>"
             f"<td class='pr'><a href='{html.escape(r['url'])}'>"
             f"{SRC_REPO}#{r['number']}</a></td>"
             f"<td class='title' title='{html.escape(full_title)}'>"
@@ -717,6 +830,12 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
             f"<td class='age'>{html.escape(r['age_text'])}</td>"
             f"<td>{owners}</td></tr>"
         )
+    parts.append(
+        "<tr id='noMatches' hidden><td colspan='4'>"
+        "No PRs are waiting on that username. "
+        "<a href='#' id='noMatchesClear'>Clear the filter</a> to see all PRs."
+        "</td></tr>"
+    )
     parts.append("</tbody></table>")
     parts.append(
         "<footer>Last refreshed "
@@ -725,6 +844,7 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<a href='https://github.com/blozano-tt/tt-metal-pr-review-requests'>Source &amp; assumptions</a>."
         "</footer>"
     )
+    parts.append(f"<script>{FILTER_JS}</script>")
     parts.append("</div></body></html>")
     return "\n".join(parts)
 

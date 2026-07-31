@@ -25,6 +25,29 @@ number. A machine-readable `data.json` is published alongside it.
    group that already has an approval, and unions what's left.
 5. Renders `public/index.html` (+ `public/data.json`) and deploys to Pages.
 
+### Filtering by username
+
+The page has a **"Filter by GitHub username"** box that narrows the table to the
+PRs waiting on one person. It is entirely client-side — a small inline script
+matching the typed text against a `data-owners` attribute on each row. There is
+no backend, no auth, and no network call.
+
+Deliberately **not** GitHub OAuth: this is a static Pages site with nowhere to
+run a token exchange, and the device flow is blocked by CORS from browser JS.
+Typing your own handle takes one second and needs no permissions.
+
+Behaviour: case-insensitive (GitHub logins are), a leading `@` is optional,
+substring matches work so the list narrows as you type, `Esc` or the **Clear**
+button resets, and the status line reads
+*"Filter active — showing N of M PRs awaiting <name>."* The last value is kept
+in `localStorage` so it survives a reload; storage failures are caught, so the
+filter still works in private-browsing mode.
+
+The stat tiles keep showing whole-dataset totals even while a filter is active,
+because they link out to GitHub searches over the whole dataset — changing their
+numbers would contradict where they point. The status line is the authoritative
+filtered count.
+
 ### Refresh cadence
 
 `.github/workflows/refresh.yml` runs:
