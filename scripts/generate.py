@@ -1121,35 +1121,43 @@ FILTER_JS = r"""
   // The shareable URL for a filter value. Built from the value rather than read
   // back off location.href, so it stays correct even when a replaceState was
   // refused or rate-limited and the address bar is stale.
-  function permalink(handle) {
+  // forceParam keeps an explicit "?filter=" in the URL even when handle is
+  // empty, so a permalink to the deliberately unfiltered table survives being
+  // read back out (see the forceParam callers in apply()).
+  function permalink(handle, forceParam) {
     var base = location.origin + location.pathname;
     var params = null;
     if (canParse) {
       try { params = new URLSearchParams(location.search); } catch (e) { params = null; }
     }
     if (!params) {
-      return handle ? base + '?' + PARAM + '=' + encodeURIComponent(handle) : base;
+      return (handle || forceParam)
+        ? base + '?' + PARAM + '=' + encodeURIComponent(handle)
+        : base;
     }
     // Drop every alias before re-adding the canonical one: a link that arrived
     // as ?user=x must not come back out carrying two parameters that disagree.
     for (var i = 0; i < ALIASES.length; i++) { params.delete(ALIASES[i]); }
-    if (handle) { params.set(PARAM, handle); }
+    if (handle || forceParam) { params.set(PARAM, handle); }
     var query = params.toString();
     return base + (query ? '?' + query : '');
   }
 
-  function syncUrl(handle) {
+  function syncUrl(handle, forceParam) {
     if (!canRewrite) { return; }
     // replaceState, not pushState: this runs on every keystroke, and a
     // ten-character login should not bury the previous page under ten history
     // entries. Safari rate-limits replaceState, so a refusal must not take the
     // filtering down with it -- hence the catch.
     try {
-      window.history.replaceState(null, '', permalink(handle));
+      window.history.replaceState(null, '', permalink(handle, forceParam));
     } catch (e) { /* address bar goes stale; Copy link is built from the value */ }
   }
 
-  function apply(raw, skipUrl) {
+  // skipStore keeps a value that arrived via the URL (a shared link, or
+  // history navigation) from overwriting what this visitor had saved --
+  // only typing into the box, or explicitly clearing it, should do that.
+  function apply(raw, skipUrl, skipStore, forceParam) {
     var typed = (raw || '').trim();
     var handle = handleOf(typed);         // what a permalink carries
     // GitHub logins are case-insensitive.
@@ -1171,10 +1179,11 @@ FILTER_JS = r"""
         total + ' PRs awaiting ' + typed + '. Clear the box to see all.';
       if (noMatches) { noMatches.hidden = shown !== 0; }
     }
-    // The box is the single source of truth; the URL and localStorage are both
-    // mirrors of it, updated together so they can never drift apart.
-    store(typed);
-    if (!skipUrl) { syncUrl(handle); }
+    // The box is the single source of truth for what's displayed; the URL and
+    // localStorage are updated to match it, but only when this call reflects
+    // the visitor's own action rather than a value we just read from the URL.
+    if (!skipStore) { store(typed); }
+    if (!skipUrl) { syncUrl(handle, forceParam); }
   }
 
   function reset() {
@@ -1241,22 +1250,26 @@ FILTER_JS = r"""
 
   // Nothing here pushes history, but the user can still arrive back at a
   // different ?filter= from a restored entry; re-read the URL rather than
-  // leaving the table showing the previous view's rows.
+  // leaving the table showing the previous view's rows. This is navigation,
+  // not the visitor typing, so it must not touch their saved filter.
   window.addEventListener('popstate', function () {
     var fromLink = fromUrl();
     input.value = fromLink === null ? '' : fromLink;
-    apply(input.value, true);
+    apply(input.value, true, true);
   });
 
   var saved = '';
   try { saved = localStorage.getItem(KEY) || ''; } catch (e) { saved = ''; }
   // A shared link has to show the recipient what the sender saw, so the URL
-  // wins over whatever this visitor last typed here.
+  // wins over whatever this visitor last typed here -- but seeing someone
+  // else's link must not overwrite this visitor's own saved filter, and an
+  // explicit empty ?filter= (a permalink to the unfiltered table) must not be
+  // rewritten away the moment it is read.
   var fromLink = fromUrl();
   input.value = fromLink === null ? saved : fromLink;
 
   bar.hidden = false;   // reveal only once wired up
-  apply(input.value);
+  apply(input.value, false, fromLink !== null, fromLink === '');
 }());
 """
 
@@ -1540,11 +1553,12 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         parts.append("</ul></div>")
 
     # Hidden until the script runs, so users without JS aren't shown a dead control.
+    # maxlength mirrors MAX_LEN in FILTER_JS below -- keep the two in sync.
     parts.append(
         "<div class='filterbar card' id='filterBar' hidden>"
         "<label for='ownerFilter'>Filter by GitHub username</label>"
         "<input id='ownerFilter' type='search' autocomplete='off' spellcheck='false'"
-        " placeholder='e.g. afuller-TT'>"
+        " maxlength='64' placeholder='e.g. afuller-TT'>"
         "<button type='button' id='ownerFilterClear'>Clear</button>"
         "<button type='button' id='ownerFilterCopy'"
         " title='Copy a link to this view. Opening it applies the filter"
