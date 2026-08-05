@@ -936,6 +936,9 @@ a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
 .filterbar button { background:var(--chip); color:var(--text); font:inherit;
   border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
 .filterbar button:hover { border-color:var(--link); color:var(--link); }
+/* Fixed width so swapping the label to the "Copied" confirmation cannot shove
+   the status line sideways for the 1.8s the confirmation is up. */
+#ownerFilterCopy { min-width:96px; text-align:center; }
 #filterStatus { color:var(--muted); }
 .filterbar.active #filterStatus { color:var(--text); font-weight:600; }
 tr[hidden] { display:none; }
@@ -1055,17 +1058,35 @@ footer { color:var(--muted); font-size:12px; }
 
 # Purely client-side: no network calls, no auth, no backend. Matches the typed
 # text against each row's data-owners attribute (lowercased, @-prefixed logins).
+# The filter is also addressable: ?filter=<login> applies it on load, and typing
+# rewrites the address bar, so any filtered view is a link somebody can send.
 # Raw string so backslashes reach the browser intact (see the CSS note above).
 FILTER_JS = r"""
 (function () {
   var KEY = 'ttMetalCodeownerFilter';
+  // The canonical permalink parameter. The aliases are accepted but never
+  // emitted, so a hand-typed ?user= or ?owner= link still works and gets
+  // rewritten to ?filter= once the page loads.
+  var PARAM = 'filter';
+  var ALIASES = [PARAM, 'codeowner', 'owner', 'user', 'username'];
+  // The longest GitHub login is 39 characters. Anything far past that is a
+  // mangled or hostile URL, and the status line has to render it.
+  var MAX_LEN = 64;
+
   var bar = document.getElementById('filterBar');
   var input = document.getElementById('ownerFilter');
   var clearBtn = document.getElementById('ownerFilterClear');
+  var copyBtn = document.getElementById('ownerFilterCopy');
   var status = document.getElementById('filterStatus');
   var noMatches = document.getElementById('noMatches');
   var noMatchesClear = document.getElementById('noMatchesClear');
   if (!bar || !input) { return; }
+
+  // Feature-detected once. Typing into the box must keep working even where the
+  // permalink half cannot, so a missing API degrades silently instead of
+  // throwing during init and leaving a visible control wired to nothing.
+  var canParse = typeof window.URLSearchParams === 'function';
+  var canRewrite = canParse && !!(window.history && window.history.replaceState);
 
   // Only real data rows carry data-owners, so the "no matches" row is excluded.
   var rows = Array.prototype.slice.call(
@@ -1080,10 +1101,59 @@ FILTER_JS = r"""
     } catch (e) { /* private mode / storage disabled: filtering still works */ }
   }
 
-  function apply(raw) {
+  // A leading @ is optional everywhere: in the box, and in a permalink.
+  function handleOf(raw) { return (raw || '').trim().replace(/^@+/, ''); }
+
+  // Returns null when the URL carries no recognised parameter, which keeps
+  // "absent" (fall back to the remembered filter) distinguishable from an
+  // explicit empty ?filter= (a permalink to the deliberately unfiltered table).
+  function fromUrl() {
+    if (!canParse) { return null; }
+    var params;
+    try { params = new URLSearchParams(location.search); } catch (e) { return null; }
+    for (var i = 0; i < ALIASES.length; i++) {
+      var raw = params.get(ALIASES[i]);
+      if (raw !== null) { return handleOf(raw).slice(0, MAX_LEN); }
+    }
+    return null;
+  }
+
+  // The shareable URL for a filter value. Built from the value rather than read
+  // back off location.href, so it stays correct even when a replaceState was
+  // refused or rate-limited and the address bar is stale.
+  function permalink(handle) {
+    var base = location.origin + location.pathname;
+    var params = null;
+    if (canParse) {
+      try { params = new URLSearchParams(location.search); } catch (e) { params = null; }
+    }
+    if (!params) {
+      return handle ? base + '?' + PARAM + '=' + encodeURIComponent(handle) : base;
+    }
+    // Drop every alias before re-adding the canonical one: a link that arrived
+    // as ?user=x must not come back out carrying two parameters that disagree.
+    for (var i = 0; i < ALIASES.length; i++) { params.delete(ALIASES[i]); }
+    if (handle) { params.set(PARAM, handle); }
+    var query = params.toString();
+    return base + (query ? '?' + query : '');
+  }
+
+  function syncUrl(handle) {
+    if (!canRewrite) { return; }
+    // replaceState, not pushState: this runs on every keystroke, and a
+    // ten-character login should not bury the previous page under ten history
+    // entries. Safari rate-limits replaceState, so a refusal must not take the
+    // filtering down with it -- hence the catch.
+    try {
+      window.history.replaceState(null, '', permalink(handle));
+    } catch (e) { /* address bar goes stale; Copy link is built from the value */ }
+  }
+
+  function apply(raw, skipUrl) {
     var typed = (raw || '').trim();
-    // GitHub logins are case-insensitive; a leading @ is optional.
-    var needle = typed.toLowerCase().replace(/^@+/, '');
+    var handle = handleOf(typed);         // what a permalink carries
+    // GitHub logins are case-insensitive.
+    var needle = handle.toLowerCase();    // what rows are matched against
     var shown = 0;
     for (var i = 0; i < total; i++) {
       var hit = needle === '' ||
@@ -1101,7 +1171,10 @@ FILTER_JS = r"""
         total + ' PRs awaiting ' + typed + '. Clear the box to see all.';
       if (noMatches) { noMatches.hidden = shown !== 0; }
     }
+    // The box is the single source of truth; the URL and localStorage are both
+    // mirrors of it, updated together so they can never drift apart.
     store(typed);
+    if (!skipUrl) { syncUrl(handle); }
   }
 
   function reset() {
@@ -1110,11 +1183,55 @@ FILTER_JS = r"""
     input.focus();
   }
 
+  var COPY_LABEL = copyBtn ? copyBtn.textContent : '';
+  var copyTimer = null;
+
+  function flash(text) {
+    copyBtn.textContent = text;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(function () { copyBtn.textContent = COPY_LABEL; }, 1800);
+  }
+
+  // For non-secure contexts and older browsers, where navigator.clipboard is
+  // simply absent. Off-screen rather than display:none, which is unselectable.
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    var ok = false;
+    try {
+      ta.select();
+      ok = document.execCommand('copy');
+    } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyLink() {
+    var url = permalink(handleOf(input.value));
+    function done(ok) {
+      flash(ok ? 'Copied ✓' : 'Copy failed — use the address bar');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(
+        function () { done(true); },
+        function () { done(legacyCopy(url)); }
+      );
+      return;
+    }
+    done(legacyCopy(url));
+  }
+
   input.addEventListener('input', function () { apply(input.value); });
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { reset(); }
   });
   clearBtn.addEventListener('click', reset);
+  if (copyBtn) { copyBtn.addEventListener('click', copyLink); }
   if (noMatchesClear) {
     noMatchesClear.addEventListener('click', function (e) {
       e.preventDefault();
@@ -1122,9 +1239,21 @@ FILTER_JS = r"""
     });
   }
 
+  // Nothing here pushes history, but the user can still arrive back at a
+  // different ?filter= from a restored entry; re-read the URL rather than
+  // leaving the table showing the previous view's rows.
+  window.addEventListener('popstate', function () {
+    var fromLink = fromUrl();
+    input.value = fromLink === null ? '' : fromLink;
+    apply(input.value, true);
+  });
+
   var saved = '';
   try { saved = localStorage.getItem(KEY) || ''; } catch (e) { saved = ''; }
-  if (saved) { input.value = saved; }
+  // A shared link has to show the recipient what the sender saw, so the URL
+  // wins over whatever this visitor last typed here.
+  var fromLink = fromUrl();
+  input.value = fromLink === null ? saved : fromLink;
 
   bar.hidden = false;   // reveal only once wired up
   apply(input.value);
@@ -1417,6 +1546,10 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<input id='ownerFilter' type='search' autocomplete='off' spellcheck='false'"
         " placeholder='e.g. afuller-TT'>"
         "<button type='button' id='ownerFilterClear'>Clear</button>"
+        "<button type='button' id='ownerFilterCopy'"
+        " title='Copy a link to this view. Opening it applies the filter"
+        " straight away, so it is safe to bookmark or paste into Slack.'>"
+        "Copy link</button>"
         f"<span id='filterStatus'>Showing all {total} PRs.</span>"
         "</div>"
     )

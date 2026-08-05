@@ -168,12 +168,67 @@ substring matches work so the list narrows as you type, `Esc` or the **Clear**
 button resets, and the status line reads
 *"Filter active — showing N of M PRs awaiting <name>."* The last value is kept
 in `localStorage` so it survives a reload; storage failures are caught, so the
-filter still works in private-browsing mode.
+filter still works in private-browsing mode. The active filter is also in the
+URL as `?filter=<login>` — see [Permalinks](#permalinks-filterlogin) below.
 
 The stat tiles keep showing whole-dataset totals even while a filter is active,
 because they link out to GitHub searches over the whole dataset — changing their
 numbers would contradict where they point. The status line is the authoritative
 filtered count.
+
+#### Permalinks: `?filter=<login>`
+
+Any filtered view is addressable, so "here are the PRs waiting on you" is a link
+you can paste into Slack or bookmark:
+
+```
+https://blozano-tt.github.io/tt-metal-pr-review-requests/?filter=riverwuTT
+```
+
+The parameter is read as soon as the inline filter script runs, in the same code
+path that a typed username takes — there is no second, parallel implementation
+of "apply a filter" to keep in step. A **Copy
+link** button in the filter bar puts the current view's URL on the clipboard
+(with an off-screen-`textarea` fallback where `navigator.clipboard` is absent),
+and typing in the box rewrites the address bar, so the URL is always the link
+for what is on screen — copying it out of the address bar works just as well.
+
+Details, all of them deliberate:
+
+- **`filter` is canonical; `codeowner`, `owner`, `user` and `username` are
+  accepted as aliases.** People guess parameter names, and a link that silently
+  does nothing is worse than four lines of alias list. Aliases are *never*
+  emitted: `?user=x` is rewritten to `?filter=x` on load, so a URL can never
+  end up carrying two parameters that disagree.
+- **A leading `@` is optional and case is irrelevant**, matching the box.
+  `?filter=@riverwuTT`, `?filter=riverwutt` and `?filter=riverwuTT` are the same
+  view. The `@` is stripped from the URL (it only has to be percent-encoded);
+  the typed casing is kept, because `?filter=riverwuTT` is more recognisable in
+  a chat message than a lowercased version of the same thing.
+- **The URL beats `localStorage`.** A shared link has to show the recipient what
+  the sender saw, even if the recipient has their own remembered filter. An
+  explicit empty `?filter=` is therefore meaningful: it is a permalink to the
+  *unfiltered* table that overrides whatever was remembered.
+- **`replaceState`, not `pushState`.** The URL updates on every keystroke; a
+  ten-character login would otherwise bury the previous page under ten history
+  entries and make the back button useless. Safari rate-limits `replaceState`,
+  so the call is wrapped — a refusal leaves the address bar stale but does not
+  break filtering, and **Copy link** builds its URL from the input value rather
+  than reading `location.href`, so it stays correct either way.
+- **Unrelated query parameters are preserved**, so a link that arrives carrying
+  someone's analytics or tracking parameter keeps it.
+- **The value is clamped to 64 characters.** The longest GitHub login is 39;
+  past that the input is mangled or hostile, and the status line has to render
+  it. It is written with `textContent`, so it cannot inject markup either way.
+- **`URLSearchParams` and `history.replaceState` are feature-detected.** Without
+  them the permalink half quietly does nothing and typing still filters — the
+  failure mode must not be a visible control wired to a script that threw
+  during init.
+- **`popstate` re-reads the URL**, so arriving back at a restored entry with a
+  different `?filter=` shows that filter rather than the previous view's rows.
+
+The box remains the single source of truth: the URL and `localStorage` are both
+mirrors of it, written together in the same code path so they cannot drift.
 
 ### Sorting
 
