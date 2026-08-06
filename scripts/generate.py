@@ -936,9 +936,13 @@ a.stat::after { content:" ↗"; font-size:11px; opacity:.75; }
 .filterbar button { background:var(--chip); color:var(--text); font:inherit;
   border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
 .filterbar button:hover { border-color:var(--link); color:var(--link); }
-/* Fixed width so swapping the label to the "Copied" confirmation cannot shove
-   the status line sideways for the 1.8s the confirmation is up. */
-#ownerFilterCopy { min-width:96px; text-align:center; }
+/* Wide enough to hold every label this button swaps between ("Copy link",
+   "Copied ✓", "Copy failed"), so a confirmation cannot shove the status line
+   sideways for the 1.8s it is up. min-width rather than width: if a future
+   label does outgrow it the text still shows in full instead of being clipped,
+   which is the better of the two failure modes -- keep the labels short and
+   the box never actually has to stretch. */
+#ownerFilterCopy { min-width:104px; text-align:center; }
 #filterStatus { color:var(--muted); }
 .filterbar.active #filterStatus { color:var(--text); font-weight:600; }
 tr[hidden] { display:none; }
@@ -1113,7 +1117,7 @@ FILTER_JS = r"""
     try { params = new URLSearchParams(location.search); } catch (e) { return null; }
     for (var i = 0; i < ALIASES.length; i++) {
       var raw = params.get(ALIASES[i]);
-      if (raw !== null) { return handleOf(raw).slice(0, MAX_LEN); }
+      if (raw !== null) { return handleOf(raw); }
     }
     return null;
   }
@@ -1158,7 +1162,16 @@ FILTER_JS = r"""
   // history navigation) from overwriting what this visitor had saved --
   // only typing into the box, or explicitly clearing it, should do that.
   function apply(raw, skipUrl, skipStore, forceParam) {
-    var typed = (raw || '').trim();
+    // MAX_LEN is enforced here and nowhere else. Typing, the remembered value,
+    // a shared link and history navigation all funnel through apply(), so one
+    // clamp covers every path -- including a localStorage value saved before
+    // the input's maxlength existed, which that attribute cannot retroactively
+    // shorten because it only constrains what is typed into the box.
+    var typed = (raw || '').trim().slice(0, MAX_LEN);
+    // Only true when the clamp actually bit, i.e. for an oversized saved or
+    // programmatic value: maxlength stops the box itself from ever getting
+    // there, so this cannot fight the caret while someone is typing.
+    if (input.value.length > MAX_LEN) { input.value = typed; }
     var handle = handleOf(typed);         // what a permalink carries
     // GitHub logins are case-insensitive.
     var needle = handle.toLowerCase();    // what rows are matched against
@@ -1221,9 +1234,15 @@ FILTER_JS = r"""
   }
 
   function copyLink() {
-    var url = permalink(handleOf(input.value));
+    // forceParam: copying with an empty box yields an explicit "?filter=",
+    // which is a shareable link to the unfiltered table. A bare URL would
+    // instead let the recipient's own remembered filter take over, so there
+    // would be no way to share "show everything" without editing the URL.
+    var url = permalink(handleOf(input.value), true);
     function done(ok) {
-      flash(ok ? 'Copied ✓' : 'Copy failed — use the address bar');
+      // Kept short so it fits the button's min-width; the "look in the address
+      // bar" advice lives in the title tooltip rather than jolting the layout.
+      flash(ok ? 'Copied ✓' : 'Copy failed');
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(
@@ -1562,7 +1581,8 @@ def render_html(rows: list[dict], now: datetime, cutoff: datetime) -> str:
         "<button type='button' id='ownerFilterClear'>Clear</button>"
         "<button type='button' id='ownerFilterCopy'"
         " title='Copy a link to this view. Opening it applies the filter"
-        " straight away, so it is safe to bookmark or paste into Slack.'>"
+        " straight away, so it is safe to bookmark or paste into Slack."
+        " If the browser blocks the copy, the same link is in the address bar.'>"
         "Copy link</button>"
         f"<span id='filterStatus'>Showing all {total} PRs.</span>"
         "</div>"

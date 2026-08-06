@@ -208,7 +208,10 @@ Details, all of them deliberate:
 - **The URL beats `localStorage`.** A shared link has to show the recipient what
   the sender saw, even if the recipient has their own remembered filter. An
   explicit empty `?filter=` is therefore meaningful: it is a permalink to the
-  *unfiltered* table that overrides whatever was remembered.
+  *unfiltered* table that overrides whatever was remembered. **Copy link**
+  always writes the parameter, so copying with an empty box gives you that
+  unfiltered permalink rather than a bare URL the recipient's own saved filter
+  would quietly take over.
 - **`replaceState`, not `pushState`.** The URL updates on every keystroke; a
   ten-character login would otherwise bury the previous page under ten history
   entries and make the back button useless. Safari rate-limits `replaceState`,
